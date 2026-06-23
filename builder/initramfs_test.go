@@ -92,6 +92,39 @@ func TestBuildInitramfs(t *testing.T) {
 	}
 }
 
+// Two inputs that normalize to the same name must be rejected rather than
+// silently collapsed (which would drop a file from the archive).
+func TestBuildInitramfsRejectsCollision(t *testing.T) {
+	files := map[string]io.Reader{
+		"init":  bytes.NewBufferString("a"),
+		"/init": bytes.NewBufferString("b"),
+	}
+	sizes, err := SizesFromReaders(files)
+	if err != nil {
+		t.Fatalf("SizesFromReaders: %v", err)
+	}
+	if err := BuildInitramfs(io.Discard, files, sizes); err == nil {
+		t.Fatal("expected error for names colliding after normalization, got nil")
+	}
+}
+
+// BuildInitramfs must not mutate the caller's files map while normalizing names.
+func TestBuildInitramfsDoesNotMutateInput(t *testing.T) {
+	files := map[string]io.Reader{
+		"/init": bytes.NewBufferString("x"),
+	}
+	sizes, err := SizesFromReaders(files)
+	if err != nil {
+		t.Fatalf("SizesFromReaders: %v", err)
+	}
+	if err := BuildInitramfs(io.Discard, files, sizes); err != nil {
+		t.Fatalf("BuildInitramfs: %v", err)
+	}
+	if _, ok := files["/init"]; !ok || len(files) != 1 {
+		t.Errorf("BuildInitramfs mutated the caller's files map: %v", files)
+	}
+}
+
 // seekOnlyReader exposes only Read and Seek (no Len/Stat) so SizeFromReader must
 // fall back to seeking to determine the size.
 type seekOnlyReader struct{ r *bytes.Reader }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -78,7 +79,13 @@ func (q *qmpConn) readLoop(r *bufio.Reader) {
 	for {
 		line, err := r.ReadBytes('\n')
 		if t := bytes.TrimSpace(line); len(t) != 0 {
-			if bytes.Contains(t, []byte(`"error"`)) {
+			// A QMP command failure is a top-level {"error": {...}} object. Parse
+			// for that member instead of substring-matching "error", which would
+			// misclassify an event or return payload that merely contains the word.
+			var msg struct {
+				Error json.RawMessage `json:"error"`
+			}
+			if err := json.Unmarshal(t, &msg); err == nil && len(msg.Error) != 0 {
 				slog.Error("qmp", "msg", string(t))
 			} else {
 				slog.Debug("qmp", "msg", string(t))

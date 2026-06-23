@@ -13,15 +13,23 @@ func (l *logParser) Write(b []byte) (int, error) {
 	// delivers several newline-terminated lines at once; processing only the
 	// first would strand the rest (potentially the final [TESTS:PASS]/[TESTS:FAIL]
 	// marker) until a later write that may never come.
+	//
+	// Advance a read offset per line and compact the buffer once at the end,
+	// rather than copy-shifting the remainder after every line (O(n²) for many
+	// lines in one write).
+	var off int
 	for {
-		ix := bytes.IndexByte(l.buf, '\n')
+		ix := bytes.IndexByte(l.buf[off:], '\n')
 		if ix == -1 {
 			break
 		}
-		if err := l.line(l.buf[:ix+1]); err != nil {
+		if err := l.line(l.buf[off : off+ix+1]); err != nil {
 			return len(b), err
 		}
-		n := copy(l.buf, l.buf[ix+1:])
+		off += ix + 1
+	}
+	if off != 0 {
+		n := copy(l.buf, l.buf[off:])
 		l.buf = l.buf[:n]
 	}
 	return len(b), nil

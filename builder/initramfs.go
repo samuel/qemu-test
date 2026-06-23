@@ -8,7 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/samuel/qemu-test/builder/internal/cpio"
@@ -123,27 +123,38 @@ func SizesFromReaders(files map[string]io.Reader) (map[string]int64, error) {
 }
 
 func BuildInitramfs(out io.Writer, files map[string]io.Reader, fileSizes map[string]int64) error {
+	// Normalize into a fresh map rather than mutating the caller's: this also
+	// keeps the reader and its size keyed by the same (normalized) name, and lets
+	// us reject a collision (two inputs normalizing to one name) instead of
+	// silently dropping a file.
+	type entry struct {
+		reader io.Reader
+		size   int64
+	}
+	norm := make(map[string]entry, len(files))
 	for name, f := range files {
-		if n := cpio.Normalize(name); n != name {
-			delete(files, name)
-			files[n] = f
+		n := cpio.Normalize(name)
+		if _, ok := norm[n]; ok {
+			return fmt.Errorf("duplicate file name after normalization: %q", n)
 		}
+		norm[n] = entry{reader: f, size: fileSizes[name]}
 	}
 
 	// Provide a stable order for names.
-	names := make([]string, 0, len(files))
-	for name := range files {
+	names := make([]string, 0, len(norm))
+	for name := range norm {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	recWriter := cpio.NewWriter(out)
 	//nolint:errcheck // After success build the writer is closed and error is checked. This covers the failure paths.
 	defer recWriter.Close()
 
 	for i, name := range names {
+		e := norm[name]
 		if err := recWriter.WriteRecord(cpio.Record{
-			Reader: files[name],
+			Reader: e.reader,
 			Info: cpio.Info{
 				Ino:      uint32(i),
 				Mode:     0o755 | cpio.FileTypeRegular,
@@ -151,7 +162,7 @@ func BuildInitramfs(out io.Writer, files map[string]io.Reader, fileSizes map[str
 				GID:      0,
 				NLink:    1,
 				MTime:    0,
-				FileSize: uint32(fileSizes[name]),
+				FileSize: uint32(e.size),
 				Name:     name,
 			},
 		}); err != nil {

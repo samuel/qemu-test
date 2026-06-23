@@ -7,7 +7,7 @@ import (
 
 const (
 	FileTypeSocket           = 0o140000
-	FileTypeSymbolinkLink    = 0o120000
+	FileTypeSymbolicLink     = 0o120000
 	FileTypeRegular          = 0o100000
 	FileTypeBlockSpecial     = 0o060000
 	FileTypeDirectory        = 0o040000

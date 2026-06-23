@@ -23,21 +23,68 @@ touching (or requiring root on) your host.
 
 By default the guest is `linux/amd64`; your test package is cross-compiled with
 `CGO_ENABLED=0 GOOS=linux GOARCH=<arch>`. On non-x86 hosts QEMU runs under TCG emulation
-(slower); on a Linux host exposing `/dev/kvm`, KVM acceleration is much faster.
+(slower); on a Linux host whose architecture matches the guest and exposes a writable
+`/dev/kvm`, the default `-kvm auto` turns on KVM acceleration (`-enable-kvm -cpu host`), which is
+much faster. Use `-kvm off` to force TCG or `-kvm on` to require KVM.
 
 ### Other architectures
 
 The guest architecture is selected with `-arch <goarch>` (a Go `GOARCH` name; the tool maps it
-to the right qemu binary, e.g. `arm64` → `qemu-system-aarch64`). Only `amd64` ships an embedded
-kernel today, so other architectures need a kernel supplied with `-kernel <path>`:
+to the right qemu binary, e.g. `arm64` → `qemu-system-aarch64`). Most arches define a default
+`kernelURL`, so they boot with no `-kernel` (the kernel is downloaded and cached on first run —
+see [Fetching kernels from a URL](#fetching-kernels-from-a-url)); the rest need a kernel supplied
+with `-kernel`, which accepts either a local path or an `http(s)://` URL. `-kernel` also
+overrides the default for any arch:
 
 ```sh
-qemu-test -arch arm64 -kernel ./Image ./guesttests
+qemu-test -arch riscv64 ./guesttests                          # uses the default Debian kernelURL
+qemu-test -arch arm64 -kernel ./Image ./guesttests            # override with a local image
+qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
 ```
 
-Support is intentionally data-driven: see [`kernel/README.md`](kernel/README.md) for how to add
-an architecture (drop a kernel at `kernel/<goarch>/vmlinuz` and add an entry to `arches` in
-`arch.go`).
+`riscv64`'s default is Debian's uncompressed debian-installer kernel (a compressed `vmlinuz`
+would not boot — qemu's riscv64 `-kernel` loader does not decompress). It boots and runs tests,
+but `-out` (virtio-9p) may be unavailable if that kernel builds 9p as a module; the guest mounts
+`/out` best-effort, so runs continue regardless.
+
+#### Big-endian testing
+
+`s390x` (IBM Z) and `ppc64` (big-endian PowerPC) are registered so the test binary —
+cross-compiled for that `GOARCH` — runs **big-endian**, catching byte-order bugs that a
+little-endian host can't.
+
+```sh
+qemu-test -arch s390x ./guesttests                  # default Debian kernelURL; SCLP console, CCW bus
+qemu-test -arch ppc64 -kernel ./vmlinux ./guesttests # needs -kernel; pseries machine, PCI bus
+```
+
+`s390x` uses Debian's `installer-s390x` kernel as its default `kernelURL`, so it boots with no
+`-kernel`. `ppc64` (big-endian) has no default: it is not a Debian release arch (debian-installer
+ships `ppc64el`, not `ppc64`), so supply a kernel with `-kernel` — build one from debian-ports sid
+(e.g. extract `/boot/vmlinux` from a `debootstrap --arch=ppc64 sid` rootfs against
+`https://deb.debian.org/debian-ports`).
+
+Note: `s390x` uses the CCW bus rather than PCI, so the `-out` shared dir (which attaches a
+`virtio-9p-pci` device) does not work there yet; `ppc64`'s pseries machine is PCI-based, so
+`-out` works.
+
+### Fetching kernels from a URL
+
+When `-kernel` is an `http(s)://` URL (or an arch defines a default `kernelURL`), the kernel is
+downloaded once and cached on disk, so later runs reuse it. The cache lives under
+`os.UserCacheDir()/qemu-test/kernels` (override with the `QEMU_TEST_KERNEL_CACHE` env var),
+keyed by a hash of the URL, alongside a small JSON sidecar recording the HTTP validators
+(ETag / Last-Modified) and a content hash.
+
+Caching is **offline-first**: a cached kernel is used without any network access. Pass
+`-kernel.refresh` to re-check the remote — it issues a conditional request and re-downloads only
+when the kernel has actually changed (a `304 Not Modified` keeps the cached copy). If the remote
+is unreachable during a refresh but a cached copy exists, that copy is used.
+
+```sh
+qemu-test -kernel https://example.com/vmlinuz ./guesttests              # download + cache, then reuse
+qemu-test -kernel https://example.com/vmlinuz -kernel.refresh ./guesttests  # re-validate against the remote
+```
 
 ## Install
 
@@ -81,12 +128,16 @@ qemu-test [flags] <package> [test args...]
 | `-test.v` | `false` | Verbose test output |
 | `-v` | `false` | Verbose (debug) tool logging |
 | `-env KEY=VALUE` | | Set an environment variable for the test binary. Repeatable |
-| `-arch <goarch>` | `amd64` | Guest architecture (Go `GOARCH` name). Only `amd64` ships a kernel; others need `-kernel` |
-| `-kernel <path>` | | External kernel image, overriding the embedded kernel for `-arch` |
+| `-arch <goarch>` | `amd64` | Guest architecture (Go `GOARCH` name). Most arches have a default kernel; the rest need `-kernel` (a path or URL) |
+| `-kernel <path-or-URL>` | | External kernel image, overriding the arch's default kernel. An `http(s)://` URL is downloaded and cached (see [Fetching kernels from a URL](#fetching-kernels-from-a-url)) |
+| `-kernel.refresh` | `false` | Re-validate a URL kernel against the remote (conditional GET) and re-download if it changed; cached kernels are otherwise used without network access |
 | `-tags <tags>` | | Build tags to pass when compiling the test binary |
 | `-smp <n>` | `2` | Number of guest vCPUs |
 | `-mem <m>` | `1024` | Guest RAM in MB (a bare qemu `-m` value, so `2G` also works) |
+| `-kvm auto\|on\|off` | `auto` | KVM acceleration. `auto` enables it when the guest arch matches the host and `/dev/kvm` is writable; `on` forces it; `off` uses TCG |
+| `-append <tokens>` | | Extra kernel command-line tokens, merged after `console=...` (e.g. `-append "loglevel=7 quiet"`) |
 | `-timeout <dur>` | `5m` | Max wall-clock for the whole run; `0` disables the limit |
+| `-keep` | `false` | Keep the temp dir (initramfs, built `init`, qmp.sock) and log the full qemu command line, instead of removing it on exit |
 | `-out <dir>` | | Share a host dir into the guest at `/out` (virtio-9p) so tests can hand files back |
 | `-qemu.device <dev>` | | Add a qemu `-device` (shorthand for `-qemu.arg "-device <dev>"`). Repeatable |
 | `-qemu.arg <arg>` | | Pass a raw argument to qemu, split on the first whitespace. Repeatable |
@@ -134,13 +185,28 @@ line of the form `[QMP]<json>` to stdout. The host forwards that JSON to QEMU's 
 test is responsible for constructing valid QMP commands. The QMP channel is best-effort — if it
 fails to connect during boot, only QMP-driven tests are affected.
 
+### Debugging a run
+
+If the guest never reports a verdict (kernel panic, init crash, a missing/incompatible
+`/tests`, or bad qemu args), the tool fails with a *boot/init failure* and prints the **tail of
+the console output** so the cause is visible without re-running — distinct from an ordinary test
+failure.
+
+For deeper inspection, `-keep` retains the temp dir (built `init`, initramfs, `qmp.sock`) and
+logs the exact qemu command line, and `-v` shows kernel/boot noise and the resolved KVM mode:
+
+```sh
+qemu-test -keep -v ./mypkg        # logs the qemu command + keeps the temp dir
+qemu-test -append "loglevel=7" ./mypkg
+```
+
 ## Exit codes
 
 | Code | Meaning |
 |------|---------|
 | `0` | Tests passed (or the package had no test files, matching `go test`) |
-| `1` | Tests failed, the guest reported a setup error, or the run timed out |
-| `2` | Usage error (bad flags, missing package, malformed `-env`) |
+| `1` | Tests failed, the guest reported a setup error, the run timed out, or the guest produced no verdict (boot/init failure) |
+| `2` | Usage error (bad flags, missing package, malformed `-env`/`-kvm`) |
 
 ## How it works
 

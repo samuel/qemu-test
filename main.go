@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,8 +37,9 @@ func main() {
 	flag.Var(&qemuRawArgs, "qemu.arg", "Raw argument(s) to pass to qemu, split on the first whitespace (e.g. -qemu.arg \"-drive if=none,id=d0,file=disk.img,format=raw\"). Repeatable.")
 	var envVars MultiStringFlag
 	flag.Var(&envVars, "env", "Environment variable KEY=VALUE for the test binary; repeatable")
-	flagArch := flag.String("arch", "amd64", "Guest architecture (GOARCH name); only amd64 ships a kernel, others need -kernel")
-	flagKernel := flag.String("kernel", "", "Path to an external kernel image, overriding the embedded kernel for -arch")
+	flagArch := flag.String("arch", "amd64", "Guest architecture (GOARCH name); only amd64 ships a kernel, others need -kernel (a path or URL)")
+	flagKernel := flag.String("kernel", "", "Path or http(s) URL of an external kernel image, overriding the embedded kernel for -arch; URLs are downloaded and cached")
+	flagKernelRefresh := flag.Bool("kernel.refresh", false, "Re-validate a URL kernel against the remote (conditional GET) and re-download if changed; cached kernels are otherwise used without network access")
 	flagTags := flag.String("tags", "", "Build tags to pass when compiling the test binary")
 	flagTestRun := flag.String("test.run", "", "Run only tests matching regular expression")
 	flagTestVerbose := flag.Bool("test.v", false, "Enable verbose test output")
@@ -46,24 +48,15 @@ func main() {
 	flagMem := flag.String("mem", "1024", "Guest RAM in MB (a bare -m value, so a qemu suffix like \"2G\" also works)")
 	flagOut := flag.String("out", "", "Host dir shared writable into the guest at /out (e.g. -out ./cov ... -test.coverprofile=/out/cover.out)")
 	flagTimeout := flag.Duration("timeout", 5*time.Minute, "Max wall-clock for the VM run; 0 = no limit")
+	flagKVM := flag.String("kvm", "auto", "KVM acceleration: auto (on when the guest arch matches the host and /dev/kvm is writable), on, or off")
+	flagAppend := flag.String("append", "", "Extra kernel command-line tokens, merged after console=...; e.g. -append \"loglevel=7 quiet\"")
+	flagKeep := flag.Bool("keep", false, "Keep the temp dir (initramfs, built init, qmp.sock) and log the full qemu command line instead of removing it on exit")
 	flag.Usage = usage
 	flag.Parse()
 
-	logLevel := new(slog.LevelVar) // Info by default
 	if *flagVerbose {
-		logLevel.Set(slog.LevelDebug)
+		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
-	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: logLevel,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			// Drop time since the output is already logged with time.
-			if a.Key == "time" {
-				return slog.Attr{}
-			}
-			return a
-		},
-	})
-	slog.SetDefault(slog.New(h))
 
 	testPath := flag.Arg(0)
 	if testPath == "" {
@@ -84,6 +77,13 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "Failed: %s\n", err)
 		os.Exit(2)
 	}
+
+	kvm, err := resolveKVM(*flagKVM, a.goarch)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Failed: %s\n", err)
+		os.Exit(2)
+	}
+	slog.Debug("kvm acceleration", "mode", *flagKVM, "enabled", kvm)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -144,21 +144,79 @@ func main() {
 		defer cancel()
 	}
 
-	if err := run(ctx, a, *flagKernel, testPath, testBuildArgs, testArgs, envVars, qemuArgs); err != nil {
+	if err := run(ctx, runOpts{
+		arch:           a,
+		kernelOverride: *flagKernel,
+		kernelRefresh:  *flagKernelRefresh,
+		testPath:       testPath,
+		testBuildArgs:  testBuildArgs,
+		testArgs:       testArgs,
+		testEnv:        envVars,
+		qemuArgs:       qemuArgs,
+		kvm:            kvm,
+		keep:           *flagKeep,
+		extraCmdline:   strings.Fields(*flagAppend),
+	}); err != nil {
 		if errors.Is(err, errNoTests) {
 			// Match `go test` on a package with no tests: a notice, exit 0.
 			fmt.Printf("no test files in %s\n", testPath)
 			return
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			err = fmt.Errorf("timed out after %s", *flagTimeout)
+			// Keep the friendly duration, but preserve any captured console tail.
+			var suffix string
+			var nv *noVerdictError
+			if errors.As(err, &nv) {
+				suffix = tailSuffix(nv.tail)
+			}
+			err = fmt.Errorf("timed out after %s%s", *flagTimeout, suffix)
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "Failed: %s\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, a arch, kernelOverride, testPath string, testBuildArgs, testArgs, testEnv, qemuArgs []string) error {
+// resolveKVM decides whether to enable KVM acceleration. "off" never enables,
+// "on" always does, and "auto" enables only when the guest arch matches the host
+// (KVM cannot accelerate cross-architecture emulation) and /dev/kvm is writable.
+func resolveKVM(mode, guestArch string) (bool, error) {
+	switch mode {
+	case "off":
+		return false, nil
+	case "on":
+		return true, nil
+	case "auto":
+		if guestArch != runtime.GOARCH {
+			return false, nil
+		}
+		f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
+		if err != nil {
+			return false, nil
+		}
+		_ = f.Close() //nolint:errcheck // probe only; the open succeeding is the signal
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid -kvm %q (want auto, on, or off)", mode)
+	}
+}
+
+// runOpts carries the inputs for a single VM run, assembled from the flags.
+type runOpts struct {
+	arch           arch
+	kernelOverride string
+	kernelRefresh  bool // re-validate URL kernels against the remote (-kernel.refresh)
+	testPath       string
+	testBuildArgs  []string // build flags for the test binary (e.g. -tags, -cover)
+	testArgs       []string // argv passed to the test binary in the guest
+	testEnv        []string // KEY=VALUE env for the test binary
+	qemuArgs       []string // user/resource qemu args, before the arch boot args
+	kvm            bool     // enable KVM acceleration (-enable-kvm, -cpu host)
+	keep           bool     // keep the temp dir and log the qemu command line
+	extraCmdline   []string // extra kernel cmdline tokens (-append), merged after console=
+}
+
+func run(ctx context.Context, o runOpts) error {
+	a := o.arch
 	// Fail fast (before the expensive build) if the arch's emulator is missing.
 	if _, err := exec.LookPath(a.qemuBinary); err != nil {
 		return fmt.Errorf("qemu binary %q not found for arch %s (install it via your package manager): %w", a.qemuBinary, a.name, err)
@@ -169,48 +227,62 @@ func run(ctx context.Context, a arch, kernelOverride, testPath string, testBuild
 		return err
 	}
 	defer func() {
+		if o.keep {
+			slog.Info("keeping temp dir (-keep)", "path", tempPath)
+			return
+		}
 		if err := os.RemoveAll(tempPath); err != nil {
 			slog.Error("Failed to remove temp dir", "path", tempPath, "err", err)
 		}
 	}()
-	tepRoot, err := os.OpenRoot(tempPath)
+	tempRoot, err := os.OpenRoot(tempPath)
 	if err != nil {
 		return err
 	}
-	//nolint:errcheck
-	defer tepRoot.Close()
-	if err := copyEmbedFS(tepRoot, embedFiles); err != nil {
+	//nolint:errcheck // read-only os.Root dir handle; nothing is buffered to flush on close.
+	defer tempRoot.Close()
+	if err := copyEmbedFS(tempRoot, embedFiles); err != nil {
 		return fmt.Errorf("failed to copy embed files: %w", err)
 	}
 
-	// Resolve the kernel before the (slower) guest build so a bad -kernel path or
-	// a missing embedded kernel fails fast.
-	kernelPath, err := resolveKernel(a, kernelOverride, tempPath)
+	// Resolve the kernel before the (slower) guest build so a bad -kernel path/URL
+	// or a missing embedded kernel fails fast.
+	kernelPath, err := resolveKernel(ctx, a, o.kernelOverride, o.kernelRefresh, tempPath)
 	if err != nil {
 		return err
 	}
 
 	extraFiles := make(map[string]io.Reader)
-	extraFiles["test-args.txt"] = bytes.NewReader([]byte(strings.Join(testArgs, "\n")))
+	extraFiles["test-args.txt"] = bytes.NewReader([]byte(strings.Join(o.testArgs, "\n")))
 	// test-env.txt carries KEY=VALUE lines for the guest to set on the test
 	// binary's environment (see -env); empty when none were given.
-	extraFiles["test-env.txt"] = bytes.NewReader([]byte(strings.Join(testEnv, "\n")))
+	extraFiles["test-env.txt"] = bytes.NewReader([]byte(strings.Join(o.testEnv, "\n")))
 
 	ifs, err := os.Create(filepath.Join(tempPath, "initramfs.gz"))
 	if err != nil {
 		return err
 	}
-	//nolint:errcheck
+	//nolint:errcheck // data is flushed via the checked gzip.Writer.Close in buildTests; this deferred close only releases the fd on early-return paths.
 	defer ifs.Close()
 	slog.Debug("Building initramfs")
 	target := builder.Target{GOOS: "linux", GOARCH: a.goarch}
-	if err := buildTests(ctx, ifs, target, filepath.Join(tempPath, "init"), testPath, testBuildArgs, extraFiles); err != nil {
+	if err := buildTests(ctx, ifs, target, filepath.Join(tempPath, "init"), o.testPath, o.testBuildArgs, extraFiles); err != nil {
 		return err
 	}
 
-	slog.Debug("Running qemu")
 	qmpSock := filepath.Join(tempPath, "qmp.sock")
-	qemuArgs = append(qemuArgs, a.bootArgs(kernelPath, ifs.Name(), qmpSock)...)
+	qemuArgs := append(o.qemuArgs, a.bootArgs(bootConfig{
+		kernelPath:   kernelPath,
+		initrdPath:   ifs.Name(),
+		qmpSock:      qmpSock,
+		kvm:          o.kvm,
+		userSetCPU:   slices.Contains(o.qemuArgs, "-cpu"),
+		extraCmdline: o.extraCmdline,
+	})...)
+	slog.Debug("Running qemu", "binary", a.qemuBinary, "args", qemuArgs)
+	if o.keep {
+		slog.Info("qemu command (-keep)", "cmdline", quoteCommand(a.qemuBinary, qemuArgs))
+	}
 	qcmd := exec.CommandContext(ctx, a.qemuBinary, qemuArgs...)
 	var result int
 	const (
@@ -222,8 +294,22 @@ func run(ctx context.Context, a arch, kernelOverride, testPath string, testBuild
 	// guest forwards QMP commands by printing "[QMP]<json>"; tests only do so
 	// well after boot, so by then the connection is established.
 	var qmp atomic.Pointer[qmpConn]
+	// tail keeps the last few console lines so a run that never reports a verdict
+	// (kernel panic, init crash, bad qemu args) can show what the guest last
+	// printed instead of a bare "unknown result".
+	const tailMax = 25
+	var tail []string
+	recordTail := func(line []byte) {
+		if s := string(bytes.TrimRight(line, "\r\n")); s != "" {
+			tail = append(tail, s)
+			if len(tail) > tailMax {
+				tail = tail[len(tail)-tailMax:]
+			}
+		}
+	}
 	lp := &logParser{
 		fn: func(key, line []byte) error {
+			recordTail(line)
 			if len(key) != 0 {
 				switch k := string(key); k {
 				case "STDOUT":
@@ -267,7 +353,7 @@ func run(ctx context.Context, a arch, kernelOverride, testPath string, testBuild
 		slog.Error("connect qmp", "err", err)
 	} else {
 		qmp.Store(q)
-		//nolint:errcheck
+		//nolint:errcheck // QMP is best-effort; a close error cannot affect the test result.
 		defer q.Close()
 	}
 	waitErr := qcmd.Wait()
@@ -279,11 +365,12 @@ func run(ctx context.Context, a arch, kernelOverride, testPath string, testBuild
 	}
 	if waitErr != nil {
 		// A deadline kill surfaces as a generic Wait error (qemu was SIGKILLed);
-		// report the timeout instead so the cause is clear.
+		// report the timeout instead so the cause is clear. Either way carry the
+		// console tail so a boot failure is diagnosable.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("timed out: %w", ctx.Err())
+			return &noVerdictError{msg: "timed out", tail: tail, err: ctx.Err()}
 		}
-		return fmt.Errorf("qemu failed: %w", waitErr)
+		return &noVerdictError{msg: fmt.Sprintf("qemu failed: %v", waitErr), tail: tail, err: waitErr}
 	}
 
 	switch result {
@@ -292,7 +379,49 @@ func run(ctx context.Context, a arch, kernelOverride, testPath string, testBuild
 	case resultFail:
 		return errors.New("tests failed")
 	}
-	return fmt.Errorf("unknown result %d", result)
+	// No verdict despite a clean qemu exit: the guest powered off without printing
+	// [TESTS:PASS]/[TESTS:FAIL] — a boot/init failure (kernel panic, init crash,
+	// missing /tests), not a test failure.
+	return &noVerdictError{msg: "guest did not report a pass/fail verdict (boot or init failure)", tail: tail}
+}
+
+// noVerdictError reports a run that produced no pass/fail verdict (boot/init
+// failure, qemu failure, or timeout). It carries the captured console tail so the
+// cause is visible, and unwraps to the underlying cause so errors.Is still works
+// (e.g. a timeout still matches context.DeadlineExceeded).
+type noVerdictError struct {
+	msg  string
+	tail []string
+	err  error
+}
+
+func (e *noVerdictError) Error() string { return e.msg + tailSuffix(e.tail) }
+func (e *noVerdictError) Unwrap() error { return e.err }
+
+// tailSuffix formats captured console lines for an error message, or "" if none.
+func tailSuffix(tail []string) string {
+	if len(tail) == 0 {
+		return ""
+	}
+	return "; last console output:\n" + strings.Join(tail, "\n")
+}
+
+// quoteCommand renders a binary + args as a single, roughly copy-pasteable shell
+// command, single-quoting any argument that contains whitespace.
+func quoteCommand(bin string, args []string) string {
+	var b strings.Builder
+	b.WriteString(bin)
+	for _, a := range args {
+		b.WriteByte(' ')
+		if strings.ContainsAny(a, " \t") {
+			b.WriteByte('\'')
+			b.WriteString(a)
+			b.WriteByte('\'')
+		} else {
+			b.WriteString(a)
+		}
+	}
+	return b.String()
 }
 
 func copyEmbedFS(out *os.Root, efs embed.FS) error {
@@ -304,13 +433,13 @@ func copyEmbedFS(out *os.Root, efs embed.FS) error {
 			if path == "." {
 				return nil
 			}
-			return out.Mkdir(path, 0755)
+			return out.Mkdir(path, 0o755)
 		}
 		fi, err := efs.Open(path)
 		if err != nil {
 			return err
 		}
-		fo, err := out.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
+		fo, err := out.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
 			_ = fi.Close()
 			return err
@@ -325,12 +454,14 @@ func copyEmbedFS(out *os.Root, efs embed.FS) error {
 	})
 }
 
-// resolveKernel returns the host path to the kernel image to boot. An explicit
-// -kernel override wins (and works for any arch, including those with no embedded
-// kernel); otherwise the arch's embedded kernel — already copied into tempPath —
-// is used, after confirming it exists.
-func resolveKernel(a arch, override, tempPath string) (string, error) {
-	if override != "" {
+// resolveKernel returns the host path to the kernel image to boot. Precedence:
+// an explicit -kernel override (a local path or an http(s) URL) wins for any arch;
+// otherwise the arch's embedded kernel — already copied into tempPath — is used;
+// otherwise the arch's default kernelURL is fetched. URL kernels are downloaded
+// once and cached (see fetchKernel); refresh re-validates them against the remote.
+func resolveKernel(ctx context.Context, a arch, override string, refresh bool, tempPath string) (string, error) {
+	// A local -kernel path (not a URL) resolves immediately.
+	if override != "" && !isKernelURL(override) {
 		path, err := filepath.Abs(override)
 		if err != nil {
 			return "", err
@@ -340,13 +471,22 @@ func resolveKernel(a arch, override, tempPath string) (string, error) {
 		}
 		return path, nil
 	}
-	if a.kernelPath == "" {
-		return "", fmt.Errorf("no embedded kernel for arch %q; supply one with -kernel <path>", a.name)
+
+	var fetchURL string
+	switch {
+	case override != "": // a URL (local paths handled above)
+		fetchURL = override
+	case a.kernelURL != "":
+		fetchURL = a.kernelURL
+	default:
+		return "", fmt.Errorf("no embedded kernel for arch %q; supply one with -kernel <path-or-URL>", a.name)
 	}
-	if _, err := fs.Stat(embedFiles, a.kernelPath); err != nil {
-		return "", fmt.Errorf("no embedded kernel for arch %q; supply one with -kernel <path>", a.name)
+
+	cacheDir, err := kernelCacheDir()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(tempPath, a.kernelPath), nil
+	return fetchKernel(ctx, nil, fetchURL, cacheDir, refresh)
 }
 
 func buildTests(ctx context.Context, out io.Writer, target builder.Target, initSrcPath, testPath string, testBuildArgs []string, extraFiles map[string]io.Reader) error {
@@ -384,7 +524,7 @@ func buildTests(ctx context.Context, out io.Writer, target builder.Target, initS
 		return err
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("failed to close gzip file: %s", err)
+		return fmt.Errorf("failed to close gzip file: %w", err)
 	}
 	return nil
 }

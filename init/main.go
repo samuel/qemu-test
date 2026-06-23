@@ -10,10 +10,30 @@ import (
 	"strings"
 )
 
+// guestStdout/guestStderr are package-level so both runTests (which routes the
+// test binary's output through them) and the verdict-marker prints in main share
+// them: marker() calls freshLine() on both before printing so a marker never gets
+// glued onto un-terminated test output.
+var (
+	guestStdout = &prefixedLineWriter{w: os.Stdout, prefix: "[TESTS:STDOUT] "}
+	guestStderr = &prefixedLineWriter{w: os.Stderr, prefix: "[TESTS:STDERR] "}
+)
+
 type prefixedLineWriter struct {
 	w      io.Writer
 	prefix string
 	pre    bool
+}
+
+// freshLine terminates an in-progress (un-newline-terminated) line so a
+// following write starts on its own line. No-op when not mid-line.
+func (w *prefixedLineWriter) freshLine() error {
+	if !w.pre {
+		return nil
+	}
+	w.pre = false
+	_, err := io.WriteString(w.w, "\n")
+	return err
 }
 
 func (w *prefixedLineWriter) Write(p []byte) (n int, err error) {
@@ -23,7 +43,7 @@ func (w *prefixedLineWriter) Write(p []byte) (n int, err error) {
 			w.pre = true
 			_, err := fmt.Fprint(w.w, w.prefix)
 			if err != nil {
-				return 0, err
+				return m, err
 			}
 		}
 		ix := bytes.IndexByte(p, '\n')
@@ -50,16 +70,26 @@ func main() {
 	// shutdown always runs.
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("[TESTS:FAIL] panic: %v\n", r)
+			marker("[TESTS:FAIL] panic: %v\n", r)
 		}
 		shutdown()
 	}()
 
 	if err := runTests(); err != nil {
-		fmt.Printf("[TESTS:FAIL] %s\n", err)
+		marker("[TESTS:FAIL] %s\n", err)
 	} else {
-		fmt.Println("[TESTS:PASS]")
+		marker("[TESTS:PASS]\n")
 	}
+}
+
+// marker prints a [TESTS:...] verdict line, first terminating any un-newline-
+// terminated test output so the host parser sees the marker on its own line
+// (otherwise it is glued onto STDOUT/STDERR payload and the verdict is lost,
+// reported by the host as "unknown result").
+func marker(format string, args ...any) {
+	_ = guestStdout.freshLine() //nolint:errcheck // PID 1 cannot recover from a console write error
+	_ = guestStderr.freshLine() //nolint:errcheck // ditto
+	fmt.Printf(format, args...)
 }
 
 func runTests() error {
@@ -94,8 +124,8 @@ func runTests() error {
 	}
 
 	cmd := exec.Command("/tests", args...)
-	cmd.Stdout = &prefixedLineWriter{w: os.Stdout, prefix: "[TESTS:STDOUT] "}
-	cmd.Stderr = &prefixedLineWriter{w: os.Stderr, prefix: "[TESTS:STDERR] "}
+	cmd.Stdout = guestStdout
+	cmd.Stderr = guestStderr
 	if len(env) != 0 {
 		// Append the user vars to the inherited environment so the test keeps a
 		// baseline env; later entries win, so user vars override duplicates.

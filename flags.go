@@ -39,6 +39,11 @@ Examples:
   qemu-test ./tests
   qemu-test -test.run TestFoo -test.v -v ./tests
   qemu-test -env KEY=value -env OTHER=1 ./tests
+  qemu-test -kvm on ./tests
+  qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./tests
+  qemu-test -kernel https://example.com/vmlinuz -kernel.refresh ./tests
+  qemu-test -append "loglevel=7 quiet" ./tests
+  qemu-test -keep -v ./tests
   qemu-test -qemu.device qemu-xhci,id=xhci ./tests
   qemu-test -qemu.arg "-drive if=none,id=d0,file=disk.img,format=raw" ./tests
   qemu-test -out ./cov ./tests -test.coverprofile=/out/cover.out

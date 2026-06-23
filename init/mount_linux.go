@@ -14,35 +14,43 @@ func mountfs() error {
 	}
 
 	if err := syscall.Mount("tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_RELATIME, ""); err != nil {
-		return fmt.Errorf("tmpfs on /tmp: %v", err)
-	}
-
-	if err := os.Symlink("/proc/net/pnp", "/tmp/resolv.conf"); err != nil {
-		return fmt.Errorf("etc: %v", err)
+		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
+			// /tmp was already mounted
+		} else {
+			return fmt.Errorf("tmpfs on /tmp: %w", err)
+		}
 	}
 
 	if err := syscall.Mount("devtmpfs", "/dev", "devtmpfs", 0, ""); err != nil {
 		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
 			// /dev was already mounted (common in setups using nfsroot= or initramfs)
 		} else {
-			return fmt.Errorf("devtmpfs: %v", err)
+			return fmt.Errorf("devtmpfs: %w", err)
 		}
 	}
 
 	if err := os.MkdirAll("/dev/pts", 0755); err != nil {
-		return fmt.Errorf("mkdir /dev/pts: %v", err)
+		return fmt.Errorf("mkdir /dev/pts: %w", err)
 	}
 
 	if err := syscall.Mount("devpts", "/dev/pts", "devpts", 0, ""); err != nil {
-		return fmt.Errorf("devpts: %v", err)
+		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
+			// /dev/pts was already mounted
+		} else {
+			return fmt.Errorf("devpts: %w", err)
+		}
 	}
 
 	if err := os.MkdirAll("/dev/shm", 0755); err != nil {
-		return fmt.Errorf("mkdir /dev/shm: %v", err)
+		return fmt.Errorf("mkdir /dev/shm: %w", err)
 	}
 
 	if err := syscall.Mount("tmpfs", "/dev/shm", "tmpfs", 0, ""); err != nil {
-		return fmt.Errorf("tmpfs on /dev/shm: %v", err)
+		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
+			// /dev/shm was already mounted
+		} else {
+			return fmt.Errorf("tmpfs on /dev/shm: %w", err)
+		}
 	}
 
 	if err := syscall.Mount("tmpfs", "/run", "tmpfs", 0, ""); err != nil {
@@ -55,7 +63,7 @@ func mountfs() error {
 		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
 			// /proc was already mounted (common in setups using nfsroot= or initramfs)
 		} else {
-			return fmt.Errorf("proc: %v", err)
+			return fmt.Errorf("proc: %w", err)
 		}
 	}
 
@@ -65,18 +73,9 @@ func mountfs() error {
 		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
 			// /sys was already mounted (common in setups using nfsroot= or initramfs)
 		} else {
-			return fmt.Errorf("sys: %v", err)
+			return fmt.Errorf("sys: %w", err)
 		}
 	}
-	//
-	// dev := rootdev.Partition(rootdev.Perm)
-	// for _, fstype := range []string{"ext4", "vfat", "bcachefs"} {
-	// 	if err := syscall.Mount(dev, "/perm", fstype, 0, ""); err != nil {
-	// 		log.Printf("Could not mount permanent storage partition %s as %s: %v", dev, fstype, err)
-	// 	} else {
-	// 		break
-	// 	}
-	// }
 
 	// Create /perm/var if needed so that the /var symlink resolves
 	if err := os.MkdirAll("/perm/var", 0755); err != nil {
