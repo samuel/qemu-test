@@ -86,6 +86,17 @@ var arches = map[string]arch{
 			},
 		},
 	},
+	// riscv64 mirrors arm: it ships a default bundle built from the Debian trixie
+	// debian-installer netboot tree (the kernel plus the matching module set out of
+	// the netboot initrd), so USB modules are available via -module (e.g. xhci_pci on
+	// the virt machine's PCI bus). The kernel is the uncompressed d-i Image, which
+	// boots directly via -kernel on qemu's virt machine; a compressed vmlinuz/Image.gz
+	// would not — qemu's riscv64 -kernel loader places a raw image at 0x80200000 and
+	// does not decompress (riscv64 has no self-decompressing top-level vmlinuz like
+	// 32-bit armhf, so the d-i tree nests the raw image under debian-installer/riscv64/).
+	// The initrd's modules are .ko.xz with a binary modules.dep.bin (no text
+	// modules.dep), resolved by readKmodIndex, and decompressed in-guest
+	// (CONFIG_MODULE_DECOMPRESS).
 	"riscv64": {
 		name:       "riscv64",
 		goarch:     "riscv64",
@@ -93,12 +104,21 @@ var arches = map[string]arch{
 		machine:    "virt",
 		cpu:        "max",
 		console:    "ttyS0", // ns16550a UART on the virt machine
-		// Debian trixie riscv64 debian-installer kernel: an uncompressed Image that boots
-		// directly via -kernel on qemu's virt machine. A compressed vmlinuz/Image.gz would
-		// not — qemu's riscv64 -kernel loader places a raw image at 0x80200000 and does not
-		// decompress. The d-i tree nests it under debian-installer/riscv64/ (riscv64 has no
-		// self-decompressing top-level vmlinuz like 32-bit armhf). Fetched + cached on first run.
-		kernelURL: "https://deb.debian.org/debian/dists/trixie/main/installer-riscv64/current/images/netboot/debian-installer/riscv64/linux",
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					URL: "https://deb.debian.org/debian/dists/trixie/main/installer-riscv64/current/images/netboot/debian-installer/riscv64/linux",
+					Dst: "vmlinuz",
+				},
+				{
+					URL:     "https://deb.debian.org/debian/dists/trixie/main/installer-riscv64/current/images/netboot/debian-installer/riscv64/initrd.gz",
+					Archive: true,
+					Files: map[string]string{
+						"usr/lib/modules/*/./**": "modules/",
+					},
+				},
+			},
+		},
 	},
 	// s390x (IBM Z) is big-endian: cross-compiling the test binary for it runs the
 	// code big-endian, so it catches byte-order bugs. Uses the CCW bus, not PCI.

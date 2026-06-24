@@ -41,15 +41,18 @@ accepts either a local path or an `http(s)://` URL. `-kernel`/`-bundle` also ove
 for any arch:
 
 ```sh
-qemu-test -arch riscv64 ./guesttests                          # uses the default Debian kernelURL
+qemu-test -arch riscv64 ./guesttests                          # uses the default Debian bundle
+qemu-test -arch riscv64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on riscv64
 qemu-test -arch arm64 -kernel ./Image ./guesttests            # override with a local image
 qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
 ```
 
-`riscv64`'s default is Debian's uncompressed debian-installer kernel (a compressed `vmlinuz`
-would not boot — qemu's riscv64 `-kernel` loader does not decompress). It boots and runs tests,
-but `-out` (virtio-9p) may be unavailable if that kernel builds 9p as a module; the guest mounts
-`/out` best-effort, so runs continue regardless.
+`riscv64` mirrors `arm`: it ships a default `bundleConfig` built from the Debian trixie
+debian-installer netboot tree — the uncompressed d-i kernel (a compressed `vmlinuz` would not
+boot, as qemu's riscv64 `-kernel` loader does not decompress) plus the matching module set out of
+the netboot initrd. So it boots with no flags and USB drivers are available via `-module` (e.g.
+`-module xhci_pci` on the virt machine's PCI bus). The initrd ships no 9p module, so `-out`
+(virtio-9p) is unavailable; the guest mounts `/out` best-effort, so runs continue regardless.
 
 #### Big-endian testing
 
