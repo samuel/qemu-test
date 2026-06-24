@@ -42,6 +42,7 @@ downloaded and cached on first run — see [Fetching kernels from a URL](#fetchi
 ```sh
 qemu-test -arch riscv64 ./guesttests                          # uses the default Debian bundle
 qemu-test -arch riscv64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on riscv64
+qemu-test -arch 386 ./guesttests                              # 32-bit x86 on the amd64 kernel (IA32 emulation)
 qemu-test -arch arm64 -kernel ./Image ./guesttests            # override with a local image
 qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
 ```
@@ -50,9 +51,12 @@ qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
 Debian trixie `linux-image` `.deb`, which carries both the bootable kernel and the full in-tree
 module set in one version-matched package. So they boot with no flags, and any modular driver is
 available via `-module` (e.g. `-module xhci_pci` for USB on the PCI bus, or the 9p modules `-out`
-loads automatically — see below). `ppc64le` (little-endian POWER) is built the same way, from its
-trixie `ppc64el` release `.deb` (see [Big-endian testing](#big-endian-testing) for how it relates to
-big-endian `ppc64`). `riscv64` and `arm` instead build their `bundleConfig` from the
+loads automatically — see below). `386` (32-bit x86) reuses that amd64 bundle and 64-bit kernel —
+trixie ships no i386 kernel, so the 32-bit `init`/tests run via the kernel's IA32 emulation; it
+boots on `qemu-system-x86_64` with no flags. `ppc64le` (little-endian POWER) is built the same way
+as amd64, from its trixie `ppc64el` release `.deb` (see [Big-endian testing](#big-endian-testing)
+for how it relates to big-endian `ppc64`). `riscv64` and `arm` instead build their `bundleConfig`
+from the
 Debian trixie debian-installer netboot tree — the d-i kernel (uncompressed for riscv64, since
 qemu's riscv64 `-kernel` loader does not decompress) plus the module set out of the netboot initrd.
 That initrd is the *installer's* reduced module set: it ships USB but no 9p module, so `-out`

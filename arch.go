@@ -46,47 +46,67 @@ type arch struct {
 // -out (virtio-9p-pci) works; s390x uses the CCW bus (virtio-*-ccw), so its -out
 // 9p share does not attach until that device is made bus-aware (basic test runs,
 // which need only the serial console + QMP, are unaffected).
-var arches = map[string]arch{
-	// amd64 ships a default bundle built from the Debian trixie linux-image .deb,
-	// which carries both the bootable kernel (/boot/vmlinuz-*, a self-decompressing
-	// bzImage qemu's x86 -kernel loader boots directly) and the full in-tree module
-	// set (/usr/lib/modules/<release>/) in one package — so it stays version-matched
-	// by construction and exposes every modular driver (USB, 9p for -out, ...) via
-	// -module, rather than the fixed gokrazy kernel that baked drivers in. The
-	// "unsigned" image is the plain (non-Secure-Boot) build; its bzImage boots in
-	// qemu unchanged. The modules are .ko.xz with no modules.dep (depmod runs at
-	// install time), so dependency resolution reads each module's .modinfo
-	// (resolveModules/koDepends) and the guest decompresses them in-kernel
-	// (CONFIG_MODULE_DECOMPRESS). Rather than pin a point release, the .deb is
-	// resolved from the suite's Packages index: the linux-image-amd64 meta-package
-	// names the current ABI, which selects the matching unsigned image (see
-	// bundler.DebianRef / resolveDebianURL). The suite (trixie) stays pinned; the
-	// version within it tracks the latest, refreshed via -refresh.
-	"amd64": {
-		name:       "amd64",
-		goarch:     "amd64",
-		qemuBinary: "qemu-system-x86_64",
-		console:    "ttyS0",
-		bundleConfig: &bundler.Config{
-			Sources: []bundler.Source{
-				{
-					Debian: &bundler.DebianRef{
-						Mirror:    "https://deb.debian.org/debian",
-						Suite:     "trixie",
-						Component: "main",
-						Arch:      "amd64",
-						Via:       "linux-image-amd64",
-						AbiDep:    "linux-image-{abi}-amd64",
-						Package:   "linux-image-{abi}-amd64-unsigned",
-					},
-					Archive: true,
-					Files: map[string]string{
-						"boot/vmlinuz-*":         "vmlinuz",
-						"usr/lib/modules/*/./**": "modules/",
-					},
-				},
+//
+// 386 has no arch-specific kernel: it reuses amd64BundleConfig and boots on
+// qemu-system-x86_64, since a linux/386 (32-bit) guest runs on the amd64 64-bit
+// kernel via the kernel's 32-bit ELF emulation (CONFIG_IA32_EMULATION, on in the
+// Debian amd64 kernel). Only the cross-compiled init/test binaries differ.
+
+// amd64BundleConfig is the default boot bundle for amd64 — shared with 386, which
+// runs its 32-bit userspace on this same 64-bit kernel (see the arches comment).
+// The Debian trixie linux-image .deb carries both the bootable kernel
+// (/boot/vmlinuz-*, a self-decompressing bzImage qemu's x86 -kernel loader boots
+// directly) and the full in-tree module set (/usr/lib/modules/<release>/) in one
+// package — so it stays version-matched by construction and exposes every modular
+// driver (USB, 9p for -out, ...) via -module, rather than the fixed gokrazy kernel
+// that baked drivers in. The "unsigned" image is the plain (non-Secure-Boot) build;
+// its bzImage boots in qemu unchanged. The modules are .ko.xz with no modules.dep
+// (depmod runs at install time), so dependency resolution reads each module's
+// .modinfo (resolveModules/koDepends) and the guest decompresses them in-kernel
+// (CONFIG_MODULE_DECOMPRESS). Rather than pin a point release, the .deb is resolved
+// from the suite's Packages index: the linux-image-amd64 meta-package names the
+// current ABI, which selects the matching unsigned image (see bundler.DebianRef /
+// resolveDebianURL). The suite (trixie) stays pinned; the version within it tracks
+// the latest, refreshed via -refresh.
+var amd64BundleConfig = &bundler.Config{
+	Sources: []bundler.Source{
+		{
+			Debian: &bundler.DebianRef{
+				Mirror:    "https://deb.debian.org/debian",
+				Suite:     "trixie",
+				Component: "main",
+				Arch:      "amd64",
+				Via:       "linux-image-amd64",
+				AbiDep:    "linux-image-{abi}-amd64",
+				Package:   "linux-image-{abi}-amd64-unsigned",
+			},
+			Archive: true,
+			Files: map[string]string{
+				"boot/vmlinuz-*":         "vmlinuz",
+				"usr/lib/modules/*/./**": "modules/",
 			},
 		},
+	},
+}
+
+var arches = map[string]arch{
+	"amd64": {
+		name:         "amd64",
+		goarch:       "amd64",
+		qemuBinary:   "qemu-system-x86_64",
+		console:      "ttyS0",
+		bundleConfig: amd64BundleConfig,
+	},
+	// 386 (32-bit x86) is first-class in Go. Trixie ships no i386 kernel (i386 is a
+	// userland-only port now), so it reuses the amd64 bundle and 64-bit kernel: the
+	// 32-bit init/tests run under the kernel's IA32 emulation. machine/cpu are empty
+	// like amd64 (the qemu-system-x86_64 pc machine boots it).
+	"386": {
+		name:         "386",
+		goarch:       "386",
+		qemuBinary:   "qemu-system-x86_64", // 64-bit guest CPU; the 32-bit userspace runs via IA32 emulation
+		console:      "ttyS0",
+		bundleConfig: amd64BundleConfig,
 	},
 	// arm64 mirrors amd64: a default bundle built from the Debian trixie linux-image
 	// .deb carrying both the kernel (/boot/vmlinuz-*, a gzip-compressed Image qemu's
