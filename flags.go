@@ -31,6 +31,11 @@ func usage() {
 Usage:
   qemu-test [flags] <package> [test args...]
 
+Commands:
+  cache    Manage the kernel/bundle download cache (info, list, clear, dir)
+  bundle   Build a boot bundle (.tgz) from a JSON config
+  Run "qemu-test <command> -h" for command-specific help.
+
 Flags:
 `)
 	flag.PrintDefaults()

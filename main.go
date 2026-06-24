@@ -34,6 +34,19 @@ import (
 var errNoTests = errors.New("no test files")
 
 func main() {
+	// Subcommands are dispatched on a bare first token. A flag (-x) or a package
+	// path (./pkg) can never equal a subcommand name, so the existing
+	// "qemu-test [flags] <package>" form is unaffected; a package literally named
+	// "cache"/"bundle" is still reachable as "./cache".
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "cache":
+			os.Exit(cacheCommand(os.Args[2:]))
+		case "bundle":
+			os.Exit(bundleCommand(os.Args[2:]))
+		}
+	}
+
 	var qemuDevices MultiStringFlag
 	flag.Var(&qemuDevices, "qemu.device", "Additional devices to pass to qemu (shorthand for -qemu.arg \"-device X\")")
 	var qemuRawArgs MultiStringFlag
@@ -532,7 +545,7 @@ func resolveBuiltBundle(ctx context.Context, a arch, o runOpts, tempPath string)
 	if err != nil {
 		return bootEnv{}, fmt.Errorf("encode bundle config for arch %q: %w", a.name, err)
 	}
-	builtPath := filepath.Join(cacheDir, cache.CacheKey(string(cfgJSON))+".tgz")
+	builtPath := filepath.Join(cacheDir, cache.CacheKey(string(cfgJSON))+cache.BuiltBundleExt)
 	if _, err := os.Stat(builtPath); err != nil || o.refresh {
 		if err := bundler.Bundle(ctx, a.bundleConfig, builtPath, cacheDir, o.refresh); err != nil {
 			return bootEnv{}, fmt.Errorf("build bundle for arch %q: %w", a.name, err)

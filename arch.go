@@ -57,8 +57,11 @@ var arches = map[string]arch{
 	// qemu unchanged. The modules are .ko.xz with no modules.dep (depmod runs at
 	// install time), so dependency resolution reads each module's .modinfo
 	// (resolveModules/koDepends) and the guest decompresses them in-kernel
-	// (CONFIG_MODULE_DECOMPRESS). The URL pins a specific point release; bump the
-	// version in both occurrences to update.
+	// (CONFIG_MODULE_DECOMPRESS). Rather than pin a point release, the .deb is
+	// resolved from the suite's Packages index: the linux-image-amd64 meta-package
+	// names the current ABI, which selects the matching unsigned image (see
+	// bundler.DebianRef / resolveDebianURL). The suite (trixie) stays pinned; the
+	// version within it tracks the latest, refreshed via -refresh.
 	"amd64": {
 		name:       "amd64",
 		goarch:     "amd64",
@@ -67,7 +70,15 @@ var arches = map[string]arch{
 		bundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
-					URL:     "https://deb.debian.org/debian/pool/main/l/linux/linux-image-6.12.86+deb13-amd64-unsigned_6.12.86-1_amd64.deb",
+					Debian: &bundler.DebianRef{
+						Mirror:    "https://deb.debian.org/debian",
+						Suite:     "trixie",
+						Component: "main",
+						Arch:      "amd64",
+						Via:       "linux-image-amd64",
+						AbiDep:    "linux-image-{abi}-amd64",
+						Package:   "linux-image-{abi}-amd64-unsigned",
+					},
 					Archive: true,
 					Files: map[string]string{
 						"boot/vmlinuz-*":         "vmlinuz",
@@ -81,7 +92,9 @@ var arches = map[string]arch{
 	// .deb carrying both the kernel (/boot/vmlinuz-*, a gzip-compressed Image qemu's
 	// aarch64 -kernel loader boots on the virt machine) and the full module tree, so
 	// USB and other modular drivers (9p for -out, ...) are available via -module on
-	// the virt machine's PCI bus. Same .ko.xz/.modinfo/version-pinning notes as amd64.
+	// the virt machine's PCI bus. Same .ko.xz/.modinfo notes as amd64, and the .deb
+	// is likewise resolved from the suite's Packages index (linux-image-arm64
+	// meta-package -> current ABI) rather than version-pinned.
 	"arm64": {
 		name:       "arm64",
 		goarch:     "arm64",
@@ -92,7 +105,15 @@ var arches = map[string]arch{
 		bundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
-					URL:     "https://deb.debian.org/debian/pool/main/l/linux/linux-image-6.12.86+deb13-arm64-unsigned_6.12.86-1_arm64.deb",
+					Debian: &bundler.DebianRef{
+						Mirror:    "https://deb.debian.org/debian",
+						Suite:     "trixie",
+						Component: "main",
+						Arch:      "arm64",
+						Via:       "linux-image-arm64",
+						AbiDep:    "linux-image-{abi}-arm64",
+						Package:   "linux-image-{abi}-arm64-unsigned",
+					},
 					Archive: true,
 					Files: map[string]string{
 						"boot/vmlinuz-*":         "vmlinuz",
@@ -160,7 +181,19 @@ var arches = map[string]arch{
 		},
 	},
 	// s390x (IBM Z) is big-endian: cross-compiling the test binary for it runs the
-	// code big-endian, so it catches byte-order bugs. Uses the CCW bus, not PCI.
+	// code big-endian, so it catches byte-order bugs. Its default virtio devices sit
+	// on the CCW bus, but the s390-ccw-virtio machine also supports PCI via IBM Z's
+	// zPCI: a PCI device added with -qemu.device is auto-wrapped in a zPCI function
+	// (so plain `-qemu.device qemu-xhci,id=xhci` attaches it — do NOT also add an
+	// explicit `zpci` device, which collides with the auto-created one). So USB
+	// (qemu-xhci) and -out (virtio-9p-pci) both work here once their modules are
+	// present. They come from the default bundle, which mirrors amd64/arm64: the
+	// Debian trixie linux-image .deb carries the bootable kernel (/boot/vmlinuz-*,
+	// the s390 IPL image, which qemu's s390-ccw-virtio -kernel loader boots directly)
+	// plus the full in-tree module set, version-matched by construction and resolved
+	// from the suite's Packages index rather than version-pinned (linux-image-s390x
+	// meta-package -> current ABI; no signed/unsigned split on s390x, so the target
+	// package name has no -unsigned suffix). Same .ko.xz/.modinfo notes as amd64.
 	"s390x": {
 		name:       "s390x",
 		goarch:     "s390x",
@@ -168,14 +201,29 @@ var arches = map[string]arch{
 		machine:    "s390-ccw-virtio",
 		cpu:        "max",      // all TCG-emulable facilities; kvm branch substitutes "host"
 		console:    "ttysclp0", // SCLP line console; qemu maps it to -serial stdio.
-		// Debian trixie s390x debian-installer kernel: the s390 IPL "generic" image, which
-		// self-decompresses and boots directly via -kernel on qemu's s390-ccw-virtio machine
-		// (with virtio-ccw). Unlike riscv64, qemu's s390x loader handles the compressed image.
-		// Fetched + cached on first run.
-		kernelURL: "https://deb.debian.org/debian/dists/trixie/main/installer-s390x/current/images/generic/kernel.debian",
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					Debian: &bundler.DebianRef{
+						Mirror:    "https://deb.debian.org/debian",
+						Suite:     "trixie",
+						Component: "main",
+						Arch:      "s390x",
+						Via:       "linux-image-s390x",
+						AbiDep:    "linux-image-{abi}-s390x",
+						Package:   "linux-image-{abi}-s390x",
+					},
+					Archive: true,
+					Files: map[string]string{
+						"boot/vmlinuz-*":         "vmlinuz",
+						"usr/lib/modules/*/./**": "modules/",
+					},
+				},
+			},
+		},
 	},
 	// ppc64 (big-endian PowerPC; ppc64le is little-endian) is the other big-endian
-	// entry, and the one wired up to exercise USB on a big-endian guest: the pseries
+	// entry, and the one wired up to exercise code on a big-endian guest: the pseries
 	// machine has a PCI bus (so qemu-xhci attaches), but the Debian kernel builds USB
 	// as modules, so a bundle is required to get it. ppc64 big-endian is not a Debian
 	// release arch (debian-installer ships ppc64el), so there is no netboot
@@ -185,7 +233,11 @@ var arches = map[string]arch{
 	// dependency resolution reads each module's .modinfo (resolveModules/koDepends)
 	// and the guest decompresses them in-kernel (CONFIG_MODULE_DECOMPRESS, set in the
 	// Debian kernel). -out (virtio-9p-pci) attaches, but 9p is modular here too, so a
-	// test needing the share must load it (e.g. -module 9pnet_virtio).
+	// test needing the share must load it (e.g. -module 9pnet_virtio). Both .debs are
+	// resolved from the debian-ports unstable Packages index rather than version-
+	// pinned: the linux-image-powerpc64 meta-package names the current ABI, which is
+	// substituted into both the linux-binary and linux-modules package names (see
+	// bundler.DebianRef); the two share that ABI so kernel and modules stay matched.
 	"ppc64": {
 		name:       "ppc64",
 		goarch:     "ppc64",
@@ -196,12 +248,28 @@ var arches = map[string]arch{
 		bundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
-					URL:     "https://deb.debian.org/debian-ports/pool-ppc64/main/l/linux/linux-binary-7.0.12+deb14-powerpc64_7.0.12-1_ppc64.deb",
+					Debian: &bundler.DebianRef{
+						Mirror:    "https://deb.debian.org/debian-ports",
+						Suite:     "unstable",
+						Component: "main",
+						Arch:      "ppc64",
+						Via:       "linux-image-powerpc64",
+						AbiDep:    "linux-image-{abi}-powerpc64",
+						Package:   "linux-binary-{abi}-powerpc64",
+					},
 					Archive: true,
 					Files:   map[string]string{"boot/vmlinux-*": "vmlinuz"},
 				},
 				{
-					URL:     "https://deb.debian.org/debian-ports/pool-ppc64/main/l/linux/linux-modules-7.0.12+deb14-powerpc64_7.0.12-1_ppc64.deb",
+					Debian: &bundler.DebianRef{
+						Mirror:    "https://deb.debian.org/debian-ports",
+						Suite:     "unstable",
+						Component: "main",
+						Arch:      "ppc64",
+						Via:       "linux-image-powerpc64",
+						AbiDep:    "linux-image-{abi}-powerpc64",
+						Package:   "linux-modules-{abi}-powerpc64",
+					},
 					Archive: true,
 					Files:   map[string]string{"usr/lib/modules/*/./**": "modules/"},
 				},

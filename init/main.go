@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // guestStdout/guestStderr are package-level so both runTests (which routes the
@@ -137,6 +138,9 @@ func runTests() error {
 	if err := writeSys("/sys/bus/pci/rescan", []byte("1\n")); err != nil {
 		fmt.Println(err.Error())
 	}
+
+	// Wait for devices to settle. Ideally this would just wait for some events.
+	time.Sleep(time.Second)
 
 	cmd := exec.Command("/tests", args...)
 	cmd.Stdout = guestStdout

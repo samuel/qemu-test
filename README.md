@@ -33,7 +33,7 @@ much faster. Use `-kvm off` to force TCG or `-kvm on` to require KVM.
 The guest architecture is selected with `-arch <goarch>` (a Go `GOARCH` name; the tool maps it
 to the right qemu binary, e.g. `arm64` → `qemu-system-aarch64`). Most arches carry a default
 **bundle** — either a `bundleURL` (a prebuilt archive) or a `bundleConfig` the tool builds locally
-on first run (see [Building boot bundles](#building-boot-bundles-bundler)) — so they boot with a
+on first run (see [Building boot bundles](#building-boot-bundles-qemu-test-bundle)) — so they boot with a
 matching kernel + modules and no flags; the rest define a default `kernelURL` (a bare kernel,
 downloaded and cached on first run — see [Fetching kernels from a URL](#fetching-kernels-from-a-url)).
 `-kernel`/`-bundle` also override the default for any arch (`-kernel` accepts a local path or an
@@ -64,14 +64,20 @@ cross-compiled for that `GOARCH` — runs **big-endian**, catching byte-order bu
 little-endian host can't.
 
 ```sh
-qemu-test -arch s390x ./guesttests                       # default Debian kernelURL; SCLP console, CCW bus
+qemu-test -arch s390x ./guesttests                       # default Debian linux-image bundle; SCLP console, CCW bus
+qemu-test -arch s390x -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on s390x via zPCI
 qemu-test -arch ppc64 ./guesttests                       # default bundle built from debian-ports .debs
 qemu-test -arch ppc64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on a big-endian guest
 ```
 
-`s390x` uses Debian's `installer-s390x` kernel as its default `kernelURL`, so it boots with no
-`-kernel`. It ships no modules, so it is best for plain byte-order tests; its CCW machine also
-makes USB awkward, so use `ppc64` when you need USB.
+`s390x` ships a default `bundleConfig` built from the Debian trixie `linux-image-s390x` `.deb`
+(resolved from the Packages index like amd64/arm64, so it is not version-pinned): its
+`/boot/vmlinuz-*` IPL image boots directly via `-kernel` on the `s390-ccw-virtio` machine, and the
+`.deb` carries the full module set, so `-module` works. Its default virtio devices use the CCW bus,
+but the machine *also* exposes PCI via IBM Z **zPCI**: a PCI device added with `-qemu.device` is
+auto-wrapped in a zPCI function (don't add an explicit `zpci` device — it collides with the
+auto-created one), so USB (`qemu-xhci`) and `-out` (`virtio-9p-pci`) both work, just like on a
+PCI-bus arch.
 
 `ppc64` is the big-endian arch wired up for **USB testing**. Its pseries machine has a PCI bus
 (so `qemu-xhci` attaches), but the Debian kernel builds USB as loadable modules — so `ppc64` ships
@@ -79,22 +85,23 @@ a default `bundleConfig` rather than a bare kernel. Since big-endian `ppc64` is 
 release arch (debian-installer ships `ppc64el`), there is no netboot kernel+initrd as for `arm`;
 the bundle is instead built from **debian-ports `linux-*.deb` packages** (the bootable `vmlinux`
 from `linux-binary` plus the matching module tree from `linux-modules`) — see
-[Building boot bundles](#building-boot-bundles-bundler). On first run the tool fetches those
+[Building boot bundles](#building-boot-bundles-qemu-test-bundle). On first run the tool fetches those
 `.deb`s and builds the bundle (both cached), so `-arch ppc64` boots with no extra flags; name USB
 modules with `-module` (e.g. `-module xhci_pci`) and attach a controller with `-qemu.device`.
 
-Note: `s390x` uses the CCW bus rather than PCI, so the `-out` shared dir (which attaches a
-`virtio-9p-pci` device) does not work there yet. `ppc64`'s pseries machine is PCI-based, so the
-`-out` device attaches; its Debian kernel builds 9p as a module, but `-out` loads the needed 9p
-modules automatically (so no manual `-module` is required where the bundle ships them).
+Note: both `ppc64` and `s390x` attach the `-out` shared dir's `virtio-9p-pci` device — `ppc64` on
+its pseries PCI bus, `s390x` via zPCI (the device auto-wraps in a zPCI function on `s390-ccw-virtio`).
+On both, the Debian kernel builds 9p as a module, but `-out` adds the needed 9p modules to the load
+list automatically (so no manual `-module` is required where the bundle ships them).
 
 ### Fetching kernels from a URL
 
 When `-kernel` is an `http(s)://` URL (or an arch defines a default `kernelURL`), the kernel is
 downloaded once and cached on disk, so later runs reuse it. The cache lives under
-`os.UserCacheDir()/qemu-test/kernels` (override with the `QEMU_TEST_CACHE` env var),
+`os.UserCacheDir()/qemu-test` (override with the `QEMU_TEST_CACHE` env var),
 keyed by a hash of the URL, alongside a small JSON sidecar recording the HTTP validators
-(ETag / Last-Modified) and a content hash.
+(ETag / Last-Modified) and a content hash. Use [`qemu-test cache`](#managing-the-cache) to
+inspect or prune it.
 
 Caching is **offline-first**: a cached kernel is used without any network access. Pass
 `-refresh` to re-check the remote — it issues a conditional request and re-downloads only
@@ -161,22 +168,25 @@ regardless of compression, so you need not name deps by hand. Without a modules 
 `-kernel` bare kernel that builds its drivers in), `-module` finds nothing to load and is skipped —
 runs stay green.
 
-### Building boot bundles (`bundler`)
+### Building boot bundles (`qemu-test bundle`)
 
-`cmd/bundler` assembles a boot bundle from upstream artifacts — a distribution's netboot kernel
-plus the matching modules from its initrd, or the kernel and modules straight out of Debian
-`linux-*.deb` packages — so you don't have to hand-craft the `vmlinuz` + `lib/modules/<release>/`
-layout above. It downloads each source (cached the same way as kernels/bundles), pulls files out of
-archives by glob, and writes a deterministic `.tgz`.
+The `qemu-test bundle` subcommand assembles a boot bundle from upstream artifacts — a
+distribution's netboot kernel plus the matching modules from its initrd, or the kernel and modules
+straight out of Debian `linux-*.deb` packages — so you don't have to hand-craft the `vmlinuz` +
+`lib/modules/<release>/` layout above. It downloads each source (cached the same way as
+kernels/bundles), pulls files out of archives by glob, and writes a deterministic `.tgz`.
 
 ```sh
-go run ./cmd/bundler -config arm.json -o arm-boot.tgz   # add -v to see progress, -refresh to re-fetch
+qemu-test bundle -config arm.json -o arm-boot.tgz   # add -v to see progress, -refresh to re-fetch
 ```
 
-The config is a JSON array of **sources**. A *plain* source copies one downloaded file to `dst`.
-An *archive* source (`"archive": true`) selects files via `files`, a map of **glob → destination**.
-The example below pulls a kernel and modules out of two Debian `.deb` packages (as `-arch ppc64`
-does); the glob paths match the files' installed locations inside the package:
+The config is a JSON object with one key `"sources"`, an array of **sources**. Each source names a
+download location — either an explicit `url` **or** a `debian` block that resolves one from a Debian
+package index (see below) — and a selection mode. A *plain* source copies the downloaded file to
+`dst`. An *archive* source (`"archive": true`) selects files via `files`, a map of
+**glob → destination**. The example below pulls a kernel and modules out of two Debian `.deb`
+packages (as `-arch ppc64` does); the glob paths match the files' installed locations inside the
+package:
 
 ```json
 {
@@ -192,6 +202,39 @@ does); the glob paths match the files' installed locations inside the package:
       "url": "https://deb.debian.org/debian-ports/.../linux-modules-...-powerpc64_..._ppc64.deb",
       "archive": true,
       "files": {
+        "usr/lib/modules/*/./**": "modules/"
+      }
+    }
+  ]
+}
+```
+
+**Resolving the latest `.deb` instead of pinning a version (`debian`).** A pool `.deb` URL embeds
+its exact version (`linux-image-6.12.86+deb13-amd64-unsigned_6.12.86-1_amd64.deb`) and Debian
+offers no "latest" alias for it. To avoid hardcoding a version, give a source a `debian` block
+instead of a `url`: the bundler fetches the suite's `binary-<arch>/Packages` index, reads the
+**meta-package** named by `via` to discover the current kernel ABI (from its dependency matching
+`abiDep`'s `{abi}` placeholder), substitutes that ABI into `package`, and downloads that stanza's
+`.deb`. From there the source behaves exactly like a `url` one (`archive`/`files` still apply). The
+suite stays pinned, but the version within it tracks the latest, picked up on `-refresh`. The
+default `amd64`, `arm64`, and `ppc64` bundles use this; for example amd64:
+
+```json
+{
+  "sources": [
+    {
+      "debian": {
+        "mirror": "https://deb.debian.org/debian",
+        "suite": "trixie",
+        "component": "main",
+        "arch": "amd64",
+        "via": "linux-image-amd64",
+        "abiDep": "linux-image-{abi}-amd64",
+        "package": "linux-image-{abi}-amd64-unsigned"
+      },
+      "archive": true,
+      "files": {
+        "boot/vmlinuz-*": "vmlinuz",
         "usr/lib/modules/*/./**": "modules/"
       }
     }
@@ -231,6 +274,27 @@ needs no flags. The built `.tgz` is deterministic and cached (keyed by a hash of
 the same cache dir), so later runs skip the rebuild; a config change rebuilds, and
 `-refresh` re-validates the upstream sources and rebuilds. `arm` (Debian armhf netboot
 kernel + modules from its initrd) ships this way.
+
+### Managing the cache
+
+Downloaded kernels and bundles, and locally built bundles, accumulate in the cache dir
+(`os.UserCacheDir()/qemu-test`, override with `QEMU_TEST_CACHE`). The `qemu-test cache`
+subcommand inspects and prunes it — everything it removes is re-fetched or rebuilt on the next
+run, so clearing is always safe.
+
+```sh
+qemu-test cache                 # item count + total size on disk (alias of "cache info")
+qemu-test cache list            # one row per item: short key, kind, size, fetched-at, source URL
+qemu-test cache list -v         # full keys plus each item's on-disk paths
+qemu-test cache clear           # remove everything (also sweeps stray temp files)
+qemu-test cache clear <key|url> # remove only the named item(s); key as shown by "list", or its URL
+qemu-test cache dir             # print the cache directory path
+```
+
+`list` reports each item's *kind*: `download` (a bare kernel or a build source), `bundle` (a
+downloaded bundle with its extracted tree), `built` (a bundle built from an arch's `bundleConfig`),
+or `orphan` (a leftover with no body, still reclaimable). Built bundles have no source URL, so
+clear them by the key shown in `list`.
 
 ## Install
 
@@ -383,7 +447,7 @@ The guest and host communicate over a small line protocol on the serial console:
 ## Developing this tool
 
 ```sh
-# Host-side unit tests (builder, cpio, flag parsing, log parser, bundler) — no qemu needed
+# Host-side unit tests (builder, cpio, flag parsing, log parser, cache + cache subcommand, bundler) — no qemu needed
 go test ./...
 
 # End-to-end against the sample package (requires qemu-system-x86_64)

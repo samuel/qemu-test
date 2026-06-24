@@ -20,6 +20,11 @@ const (
 	KindBundle = "bundle"
 )
 
+// BuiltBundleExt is the suffix of a boot bundle built locally from an arch's
+// bundleConfig (cached as <sha256(config)>.tgz). It distinguishes a built bundle
+// from a downloaded body (a bare sha256 key) when enumerating the cache.
+const BuiltBundleExt = ".tgz"
+
 // IsHTTPURL reports whether s is an http(s) URL rather than a local filesystem
 // path, so -kernel and arch.kernelURL can accept either form.
 func IsHTTPURL(s string) bool {
@@ -31,9 +36,9 @@ func IsHTTPURL(s string) bool {
 }
 
 // CacheDir returns the persistent on-disk directory where downloaded kernels
-// are cached, creating it if needed. It honors QEMU_TEST_CACHE for an
+// and bundles are cached, creating it if needed. It honors QEMU_TEST_CACHE for an
 // explicit override (also the seam used by tests); otherwise it is
-// os.UserCacheDir()/qemu-test/kernels. It is only consulted when a kernel actually
+// os.UserCacheDir()/qemu-test. It is only consulted when an artifact actually
 // needs fetching, so embedded/local-path runs never depend on a usable cache dir.
 func CacheDir() (string, error) {
 	dir := os.Getenv("QEMU_TEST_CACHE")

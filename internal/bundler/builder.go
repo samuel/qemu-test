@@ -57,6 +57,15 @@ func Bundle(ctx context.Context, cfg *Config, outPath, cacheDir string, refresh 
 	client := http.DefaultClient
 	out := make(map[string]entry)
 	for _, src := range cfg.Sources {
+		// A Debian source has no fixed URL: resolve it against the repository index
+		// first, then treat it like any other downloaded source.
+		if src.Debian != nil {
+			url, err := resolveDebianURL(ctx, client, src.Debian, cacheDir, refresh)
+			if err != nil {
+				return fmt.Errorf("%s: %w", src.label(), err)
+			}
+			src.URL = url
+		}
 		local, err := fetchSource(ctx, client, src.URL, cacheDir, refresh)
 		if err != nil {
 			return err
@@ -67,7 +76,7 @@ func Bundle(ctx context.Context, cfg *Config, outPath, cacheDir string, refresh 
 			err = addFile(src, local, out)
 		}
 		if err != nil {
-			return fmt.Errorf("%s: %w", src.URL, err)
+			return fmt.Errorf("%s: %w", src.label(), err)
 		}
 	}
 	if len(out) == 0 {
