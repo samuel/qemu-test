@@ -47,13 +47,41 @@ type arch struct {
 // 9p share does not attach until that device is made bus-aware (basic test runs,
 // which need only the serial console + QMP, are unaffected).
 var arches = map[string]arch{
+	// amd64 ships a default bundle built from the Debian trixie linux-image .deb,
+	// which carries both the bootable kernel (/boot/vmlinuz-*, a self-decompressing
+	// bzImage qemu's x86 -kernel loader boots directly) and the full in-tree module
+	// set (/usr/lib/modules/<release>/) in one package — so it stays version-matched
+	// by construction and exposes every modular driver (USB, 9p for -out, ...) via
+	// -module, rather than the fixed gokrazy kernel that baked drivers in. The
+	// "unsigned" image is the plain (non-Secure-Boot) build; its bzImage boots in
+	// qemu unchanged. The modules are .ko.xz with no modules.dep (depmod runs at
+	// install time), so dependency resolution reads each module's .modinfo
+	// (resolveModules/koDepends) and the guest decompresses them in-kernel
+	// (CONFIG_MODULE_DECOMPRESS). The URL pins a specific point release; bump the
+	// version in both occurrences to update.
 	"amd64": {
 		name:       "amd64",
 		goarch:     "amd64",
 		qemuBinary: "qemu-system-x86_64",
 		console:    "ttyS0",
-		kernelURL:  "https://raw.githubusercontent.com/gokrazy/kernel.amd64/refs/heads/main/vmlinuz", // fetched + cached on first run
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					URL:     "https://deb.debian.org/debian/pool/main/l/linux/linux-image-6.12.86+deb13-amd64-unsigned_6.12.86-1_amd64.deb",
+					Archive: true,
+					Files: map[string]string{
+						"boot/vmlinuz-*":         "vmlinuz",
+						"usr/lib/modules/*/./**": "modules/",
+					},
+				},
+			},
+		},
 	},
+	// arm64 mirrors amd64: a default bundle built from the Debian trixie linux-image
+	// .deb carrying both the kernel (/boot/vmlinuz-*, a gzip-compressed Image qemu's
+	// aarch64 -kernel loader boots on the virt machine) and the full module tree, so
+	// USB and other modular drivers (9p for -out, ...) are available via -module on
+	// the virt machine's PCI bus. Same .ko.xz/.modinfo/version-pinning notes as amd64.
 	"arm64": {
 		name:       "arm64",
 		goarch:     "arm64",
@@ -61,7 +89,18 @@ var arches = map[string]arch{
 		machine:    "virt",
 		cpu:        "max",
 		console:    "ttyAMA0",
-		kernelURL:  "https://raw.githubusercontent.com/gokrazy/kernel.arm64/refs/heads/main/vmlinuz", // fetched + cached on first run
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					URL:     "https://deb.debian.org/debian/pool/main/l/linux/linux-image-6.12.86+deb13-arm64-unsigned_6.12.86-1_arm64.deb",
+					Archive: true,
+					Files: map[string]string{
+						"boot/vmlinuz-*":         "vmlinuz",
+						"usr/lib/modules/*/./**": "modules/",
+					},
+				},
+			},
+		},
 	},
 	"arm": {
 		name:       "arm",

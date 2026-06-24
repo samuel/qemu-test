@@ -103,6 +103,10 @@ func runTests() error {
 		return fmt.Errorf("load modules: %w", err)
 	}
 
+	// Mount the optional -out 9p share after modules load: the default bundles
+	// build 9p as modules, so the share cannot mount until they are loaded.
+	mountOut()
+
 	var args []string
 	argsRaw, err := os.ReadFile("test-args.txt")
 	if err == nil {

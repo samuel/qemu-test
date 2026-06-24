@@ -132,6 +132,12 @@ func main() {
 		qemuArgs = append(qemuArgs,
 			"-fsdev", "local,id=out,path="+outPath+",security_model=mapped-xattr",
 			"-device", "virtio-9p-pci,fsdev=out,mount_tag=outshare")
+		// The default bundles build 9p as modules (only a bare kernel with
+		// CONFIG_9P_FS=y has it built in), so the guest cannot mount the share until
+		// the filesystem and the virtio transport are loaded. Request them here; the
+		// module resolver pulls in their dependency closure (9pnet, netfs) and
+		// harmlessly skips them where 9p is built in or the modules are absent.
+		modules = append(modules, "9p", "9pnet_virtio")
 	}
 
 	var testBuildArgs []string
@@ -179,8 +185,7 @@ func main() {
 		if errors.Is(err, context.DeadlineExceeded) {
 			// Keep the friendly duration, but preserve any captured console tail.
 			var suffix string
-			var nv *noVerdictError
-			if errors.As(err, &nv) {
+			if nv, ok := errors.AsType[*noVerdictError](err); ok {
 				suffix = tailSuffix(nv.tail)
 			}
 			err = fmt.Errorf("timed out after %s%s", *flagTimeout, suffix)

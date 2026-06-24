@@ -90,15 +90,20 @@ func mountfs() error {
 		log.Printf("cgroup2 on /sys/fs/cgroup: %v", err)
 	}
 
-	// /out is an optional host-shared directory (virtio-9p) the host attaches
-	// when run with -out, letting tests hand files (e.g. coverage) back to the
-	// host. Best-effort: without -out the device is absent and the mount fails
-	// harmlessly, so log-and-continue rather than fail the run.
+	return nil
+}
+
+// mountOut mounts the optional host-shared directory (virtio-9p) that the host
+// attaches when run with -out, letting tests hand files (e.g. coverage) back to
+// the host. It must run after loadModules: the default bundles build 9p as
+// modules (the host adds "9p"/"9pnet_virtio" to the load list for -out), so the
+// 9p filesystem and its virtio transport are not registered until those load.
+// Best-effort: without -out the device is absent and the mount fails harmlessly,
+// so log-and-continue rather than fail the run.
+func mountOut() {
 	if err := os.MkdirAll("/out", 0o755); err != nil {
 		log.Printf("mkdir /out: %v", err)
 	} else if err := syscall.Mount("outshare", "/out", "9p", 0, "trans=virtio,version=9p2000.L"); err != nil {
 		log.Printf("mount /out (9p outshare): %v", err)
 	}
-
-	return nil
 }

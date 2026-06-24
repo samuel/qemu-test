@@ -19,8 +19,8 @@ touching (or requiring root on) your host.
 - The **qemu system emulator** for your guest architecture on your `PATH` — `qemu-system-x86_64`
   for the default `amd64` guest (e.g. `brew install qemu`, `apt install qemu-system-x86`).
 - **Go 1.26+** to build the tool and cross-compile the guest.
-- No separate kernel needed for `amd64` — its kernel is fetched from a default URL and cached on
-  first run (see [Fetching kernels from a URL](#fetching-kernels-from-a-url)).
+- No separate kernel needed for `amd64` — its kernel and module set come from a default Debian
+  bundle, built and cached on first run (see [Boot bundles and kernel modules](#boot-bundles-and-kernel-modules)).
 
 By default the guest is `linux/amd64`; your test package is cross-compiled with
 `CGO_ENABLED=0 GOOS=linux GOARCH=<arch>`. On non-x86 hosts QEMU runs under TCG emulation
@@ -31,14 +31,13 @@ much faster. Use `-kvm off` to force TCG or `-kvm on` to require KVM.
 ### Other architectures
 
 The guest architecture is selected with `-arch <goarch>` (a Go `GOARCH` name; the tool maps it
-to the right qemu binary, e.g. `arm64` → `qemu-system-aarch64`). Most arches define a default
-`kernelURL`, so they boot with no `-kernel` (the kernel is downloaded and cached on first run —
-see [Fetching kernels from a URL](#fetching-kernels-from-a-url)). A few instead carry a default
+to the right qemu binary, e.g. `arm64` → `qemu-system-aarch64`). Most arches carry a default
 **bundle** — either a `bundleURL` (a prebuilt archive) or a `bundleConfig` the tool builds locally
 on first run (see [Building boot bundles](#building-boot-bundles-bundler)) — so they boot with a
-matching kernel + modules and no flags. The rest need a kernel supplied with `-kernel`, which
-accepts either a local path or an `http(s)://` URL. `-kernel`/`-bundle` also override the default
-for any arch:
+matching kernel + modules and no flags; the rest define a default `kernelURL` (a bare kernel,
+downloaded and cached on first run — see [Fetching kernels from a URL](#fetching-kernels-from-a-url)).
+`-kernel`/`-bundle` also override the default for any arch (`-kernel` accepts a local path or an
+`http(s)://` URL):
 
 ```sh
 qemu-test -arch riscv64 ./guesttests                          # uses the default Debian bundle
@@ -47,12 +46,16 @@ qemu-test -arch arm64 -kernel ./Image ./guesttests            # override with a 
 qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
 ```
 
-`riscv64` mirrors `arm`: it ships a default `bundleConfig` built from the Debian trixie
-debian-installer netboot tree — the uncompressed d-i kernel (a compressed `vmlinuz` would not
-boot, as qemu's riscv64 `-kernel` loader does not decompress) plus the matching module set out of
-the netboot initrd. So it boots with no flags and USB drivers are available via `-module` (e.g.
-`-module xhci_pci` on the virt machine's PCI bus). The initrd ships no 9p module, so `-out`
-(virtio-9p) is unavailable; the guest mounts `/out` best-effort, so runs continue regardless.
+`amd64` and `arm64` (the default and primary arches) ship a default `bundleConfig` built from the
+Debian trixie `linux-image` `.deb`, which carries both the bootable kernel and the full in-tree
+module set in one version-matched package. So they boot with no flags, and any modular driver is
+available via `-module` (e.g. `-module xhci_pci` for USB on the PCI bus, or the 9p modules `-out`
+loads automatically — see below). `riscv64` and `arm` instead build their `bundleConfig` from the
+Debian trixie debian-installer netboot tree — the d-i kernel (uncompressed for riscv64, since
+qemu's riscv64 `-kernel` loader does not decompress) plus the module set out of the netboot initrd.
+That initrd is the *installer's* reduced module set: it ships USB but no 9p module, so `-out`
+(virtio-9p) is unavailable on `riscv64`/`arm`; the guest mounts `/out` best-effort, so runs
+continue regardless.
 
 #### Big-endian testing
 
@@ -82,8 +85,8 @@ modules with `-module` (e.g. `-module xhci_pci`) and attach a controller with `-
 
 Note: `s390x` uses the CCW bus rather than PCI, so the `-out` shared dir (which attaches a
 `virtio-9p-pci` device) does not work there yet. `ppc64`'s pseries machine is PCI-based, so the
-`-out` device attaches — but its Debian kernel builds 9p as a module, so a test needing the share
-must load it (`-module 9pnet_virtio`).
+`-out` device attaches; its Debian kernel builds 9p as a module, but `-out` loads the needed 9p
+modules automatically (so no manual `-module` is required where the bundle ships them).
 
 ### Fetching kernels from a URL
 
@@ -154,8 +157,8 @@ initramfs stays small. Since initramfs content is unpacked into guest RAM, loadi
 set of modules may need more `-mem`; the tool warns when the packed modules are large relative to
 `-mem`. Compressed modules (`.ko.gz`/`.ko.xz`/`.ko.zst`) are loaded as-is and need the guest
 kernel's `CONFIG_MODULE_DECOMPRESS`; their dependencies are auto-discovered from `.modinfo`
-regardless of compression, so you need not name deps by hand. Without a bundle (e.g. the default
-`amd64`, whose kernel has these drivers built in), `-module` finds nothing to load and is skipped —
+regardless of compression, so you need not name deps by hand. Without a modules tree (e.g. a
+`-kernel` bare kernel that builds its drivers in), `-module` finds nothing to load and is skipped —
 runs stay green.
 
 ### Building boot bundles (`bundler`)
@@ -271,7 +274,7 @@ qemu-test [flags] <package> [test args...]
 | `-test.v` | `false` | Verbose test output                                                                                                                                                                                                                                           |
 | `-v` | `false` | Verbose (debug) tool logging                                                                                                                                                                                                                                  |
 | `-env KEY=VALUE` | | Set an environment variable for the test binary. Repeatable                                                                                                                                                                                                   |
-| `-arch <goarch>` | `amd64` | Guest architecture (Go `GOARCH` name). Most arches have a default kernel; the rest need `-kernel` (a path or URL)                                                                                                                                             |
+| `-arch <goarch>` | `amd64` | Guest architecture (Go `GOARCH` name). Most arches have a default kernel/bundle (built and cached on first run); `-kernel`/`-bundle` override it                                                                                                              |
 | `-kernel <path-or-URL>` | | External kernel image, overriding the arch's default kernel. An `http(s)://` URL is downloaded and cached (see [Fetching kernels from a URL](#fetching-kernels-from-a-url))                                                                                   |
 | `-bundle <path-or-URL>` | | Boot bundle (tgz/tar or directory) supplying the kernel plus its matching modules (and optional dtb). A URL is downloaded, cached, and extracted. Mutually exclusive with `-kernel` (see [Boot bundles and kernel modules](#boot-bundles-and-kernel-modules)) |
 | `-refresh` | `false` | Re-validate a URL kernel or bundle against the remote and re-download/re-extract if it changed                                                                                                                                                                 |
@@ -310,8 +313,12 @@ qemu-test -out ./cov ./mypkg -test.coverprofile=/out/cover.out   # -> ./cov/cove
 go tool cover -html=./cov/cover.out
 ```
 
-When a coverage flag (`-test.coverprofile` / `-test.covermode`) is forwarded, the test binary
-is automatically built with `-cover`.
+The default Debian bundles build 9p as loadable modules (only a bare kernel with `CONFIG_9P_FS=y`
+has it built in), so the guest can't mount the share until they're loaded. `-out` therefore adds
+`9p` and `9pnet_virtio` (and their dependencies) to the module load list automatically and mounts
+`/out` after modules load; on a bundle/kernel where 9p is built in or the modules are absent, those
+requests are harmlessly skipped. When a coverage flag (`-test.coverprofile` / `-test.covermode`) is
+forwarded, the test binary is automatically built with `-cover`.
 
 ### Attaching QEMU devices / raw args
 
