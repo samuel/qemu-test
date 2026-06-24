@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -11,7 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/samuel/qemu-test/internal/cpio"
+	"github.com/ulikunitz/xz"
 )
 
 // regRec builds a regular-file cpio record.
@@ -91,6 +94,66 @@ func maybeGzip(t *testing.T, compress bool, b []byte) []byte {
 	return out.Bytes()
 }
 
+// xzBytes returns b compressed as an xz stream.
+func xzBytes(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	xw, err := xz.NewWriter(&out)
+	if err != nil {
+		t.Fatalf("xz writer: %v", err)
+	}
+	if _, err := xw.Write(b); err != nil {
+		t.Fatalf("xz write: %v", err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatalf("xz close: %v", err)
+	}
+	return out.Bytes()
+}
+
+// zstdBytes returns b compressed as a zstd stream.
+func zstdBytes(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	zw, err := zstd.NewWriter(&out)
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	if _, err := zw.Write(b); err != nil {
+		t.Fatalf("zstd write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zstd close: %v", err)
+	}
+	return out.Bytes()
+}
+
+// debBytes builds a minimal Debian .deb (an ar archive) whose data member is
+// named dataName with content dataTar (an already-formatted, possibly compressed
+// tar). A debian-binary and a stub control member precede it, matching a real
+// .deb's member order so the reader must skip past them to reach the data member.
+func debBytes(t *testing.T, dataName string, dataTar []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	out.WriteString("!<arch>\n")
+	member := func(name string, content []byte) {
+		// 60-byte header: name(16) mtime(12) uid(6) gid(6) mode(8) size(10) magic(2).
+		hdr := fmt.Sprintf("%-16s%-12d%-6d%-6d%-8s%-10d`\n", name, 0, 0, 0, "100644", len(content))
+		if len(hdr) != 60 {
+			t.Fatalf("ar header for %q is %d bytes, want 60", name, len(hdr))
+		}
+		out.WriteString(hdr)
+		out.Write(content)
+		if len(content)%2 == 1 {
+			out.WriteByte('\n') // members are padded to an even byte boundary
+		}
+	}
+	member("debian-binary", []byte("2.0\n"))
+	member("control.tar", []byte("stub")) // metadata; the reader skips it
+	member(dataName, dataTar)
+	return out.Bytes()
+}
+
 // writeTemp writes data to a fresh temp file and returns its path.
 func writeTemp(t *testing.T, data []byte) string {
 	t.Helper()
@@ -136,6 +199,9 @@ func TestReadArchiveFormats(t *testing.T) {
 		{"cpio.gz", cpioBytes(t, true, cpioRecs()...)},
 		{"tar", tarBytes(t, false, want)},
 		{"tar.gz", tarBytes(t, true, want)},
+		{"tar.xz", xzBytes(t, tarBytes(t, false, want))},
+		{"tar.zst", zstdBytes(t, tarBytes(t, false, want))},
+		{"cpio.xz", xzBytes(t, cpioBytes(t, false, cpioRecs()...))},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -165,17 +231,41 @@ func TestReadArchiveSkipsNonRegular(t *testing.T) {
 	}
 }
 
-func TestReadArchiveUnsupportedCompression(t *testing.T) {
-	cases := map[string][]byte{
-		"xz":   {0xfd, '7', 'z', 'X', 'Z', 0x00},
-		"zstd": {0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00},
+func TestReadArchiveDeb(t *testing.T) {
+	// A .deb (ar) is unwrapped to its data.tar member, which may itself be
+	// compressed; the entry names keep their installed (./-prefixed) paths.
+	want := map[string]string{
+		"usr/lib/modules/6.12/kernel/e1000.ko.xz": "ko",
+		"boot/vmlinux-6.12":                       "kernel",
 	}
-	for name, magic := range cases {
-		t.Run(name, func(t *testing.T) {
-			err := readArchive(writeTemp(t, magic), func(archiveEntry) error { return nil })
-			if err == nil || !strings.Contains(err.Error(), "not supported") {
-				t.Errorf("err = %v, want an unsupported-compression error", err)
+	rawTar := tarBytes(t, false, map[string]string{
+		"./usr/lib/modules/6.12/kernel/e1000.ko.xz": "ko",
+		"./boot/vmlinux-6.12":                       "kernel",
+	})
+	cases := []struct {
+		name     string
+		dataName string
+		data     []byte
+	}{
+		{"data.tar", "data.tar", rawTar},
+		{"data.tar.gz", "data.tar.gz", maybeGzip(t, true, rawTar)},
+		{"data.tar.xz", "data.tar.xz", xzBytes(t, rawTar)},
+		{"data.tar.zst", "data.tar.zst", zstdBytes(t, rawTar)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := readAll(t, debBytes(t, tc.dataName, tc.data)); !maps.Equal(got, want) {
+				t.Errorf("entries = %v, want %v", got, want)
 			}
 		})
+	}
+}
+
+func TestReadArchiveDebNoDataMember(t *testing.T) {
+	// An ar archive with no data.tar member is a malformed .deb.
+	deb := debBytes(t, "not-data.tar", tarBytes(t, false, map[string]string{"x": "y"}))
+	err := readArchive(writeTemp(t, deb), func(archiveEntry) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "no data.tar member") {
+		t.Errorf("err = %v, want a missing-data.tar error", err)
 	}
 }

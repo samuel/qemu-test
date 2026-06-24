@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
 
 // writeModuleTree builds a synthetic modules tree under a temp dir: a modules.dep
@@ -180,12 +184,31 @@ func TestParseModinfoDepends(t *testing.T) {
 
 // writeFakeKo writes a minimal but valid ELF64 object at path whose .modinfo
 // section declares the given dependencies, so koDepends can parse it without a
-// real kernel build.
+// real kernel build. When the path has a compression suffix (.gz/.xz/.zst) the
+// ELF is compressed accordingly, mirroring a distro's compressed modules tree.
 func writeFakeKo(t *testing.T, path string, depends []string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	data := fakeKoBytes(t, depends)
+	switch {
+	case strings.HasSuffix(path, ".gz"):
+		data = gzipData(t, data)
+	case strings.HasSuffix(path, ".xz"):
+		data = xzData(t, data)
+	case strings.HasSuffix(path, ".zst"):
+		data = zstdData(t, data)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fakeKoBytes builds the bytes of a minimal but valid ELF64 module object whose
+// .modinfo section declares the given dependencies.
+func fakeKoBytes(t *testing.T, depends []string) []byte {
+	t.Helper()
 	modinfo := []byte("license=GPL\x00depends=" + strings.Join(depends, ",") + "\x00")
 	shstrtab := []byte("\x00.modinfo\x00.shstrtab\x00")
 	const ( // offsets of the names within shstrtab
@@ -222,9 +245,54 @@ func writeFakeKo(t *testing.T, path string, depends []string) {
 	writeSH(0, 0, 0, 0)                                                  // SHT_NULL
 	writeSH(nameModinfo, 1, uint64(modinfoOff), uint64(len(modinfo)))    // SHT_PROGBITS
 	writeSH(nameShstrtab, 3, uint64(shstrtabOff), uint64(len(shstrtab))) // SHT_STRTAB
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+	return buf.Bytes()
+}
+
+// gzipData, xzData, and zstdData return b compressed with the named codec, for
+// building synthetic compressed modules.
+func gzipData(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	gw := gzip.NewWriter(&out)
+	if _, err := gw.Write(b); err != nil {
 		t.Fatal(err)
 	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func xzData(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	xw, err := xz.NewWriter(&out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := xw.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func zstdData(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	zw, err := zstd.NewWriter(&out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
 
 func TestResolveModulesNoModulesDepFromModinfo(t *testing.T) {
@@ -265,6 +333,50 @@ func TestResolveModulesNoModulesDepDegrade(t *testing.T) {
 	}
 	if got := bases(load); !slices.Equal(got, []string{"usbcore.ko"}) {
 		t.Fatalf("load = %v, want [usbcore.ko]", got)
+	}
+}
+
+func TestKoDependsCompressed(t *testing.T) {
+	// koDepends reads .modinfo from an uncompressed .ko and transparently through
+	// gzip/xz/zstd compression — the latter two are how distro module trees ship.
+	want := []string{"xhci_hcd", "usbcore"}
+	dir := t.TempDir()
+	for _, base := range []string{"m.ko", "m.ko.gz", "m.ko.xz", "m.ko.zst"} {
+		t.Run(base, func(t *testing.T) {
+			p := filepath.Join(dir, base)
+			writeFakeKo(t, p, []string{"xhci-hcd", "usbcore"})
+			got, err := koDepends(p)
+			if err != nil {
+				t.Fatalf("koDepends: %v", err)
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("koDepends(%s) = %v, want %v", base, got, want)
+			}
+		})
+	}
+}
+
+func TestResolveModulesNoModulesDepFromModinfoXz(t *testing.T) {
+	// The ppc64 bundle's shape: a tree of .ko.xz with no modules.dep. Dependency
+	// resolution must decompress each module to read its .modinfo depends=.
+	dir := t.TempDir()
+	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/host/xhci-pci.ko.xz"), []string{"xhci_hcd"})
+	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/host/xhci-hcd.ko.xz"), []string{"usbcore"})
+	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/core/usbcore.ko.xz"), nil)
+
+	load, skipped, err := resolveModules(dir, []string{"xhci_pci"})
+	if err != nil {
+		t.Fatalf("resolveModules: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("skipped = %v, want none", skipped)
+	}
+	want := []string{"usbcore.ko.xz", "xhci-hcd.ko.xz", "xhci-pci.ko.xz"}
+	if got := bases(load); !slices.Equal(got, want) {
+		t.Fatalf("load order = %v, want %v (deps from .modinfo, dependencies first)", got, want)
+	}
+	if !load[0].compressed {
+		t.Fatalf("expected compressed modules, got %+v", load)
 	}
 }
 

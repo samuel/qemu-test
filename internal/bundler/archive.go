@@ -8,13 +8,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/samuel/qemu-test/internal/cpio"
+	"github.com/ulikunitz/xz"
 )
 
 // modeTypeMask isolates the file-type bits (S_IFMT) of a cpio record's mode so
 // regular files can be told apart from directories, symlinks, and device nodes.
 const modeTypeMask = 0o170000
+
+// arMagic is the global header of an ar archive, which a Debian .deb is.
+const arMagic = "!<arch>\n"
 
 // archiveEntry is one regular file read out of an input archive.
 type archiveEntry struct {
@@ -24,10 +31,11 @@ type archiveEntry struct {
 }
 
 // readArchive reads every regular file from the archive at path, calling fn for
-// each. The archive may be a newc cpio (e.g. a Linux initramfs) or a tar,
-// optionally gzip-compressed; the format is detected by leading magic bytes,
-// not by file extension. Directories, symlinks, and other non-regular entries
-// are skipped, mirroring cache.ExtractArchive.
+// each. The archive may be a newc cpio (e.g. a Linux initramfs), a tar, or a
+// Debian .deb (an ar archive, whose data.tar member is read), optionally
+// gzip/xz/zstd-compressed; the format is detected by leading magic bytes, not by
+// file extension. Directories, symlinks, and other non-regular entries are
+// skipped, mirroring cache.ExtractArchive.
 func readArchive(path string, fn func(archiveEntry) error) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -35,29 +43,112 @@ func readArchive(path string, fn func(archiveEntry) error) error {
 	}
 	defer f.Close() //nolint:errcheck // read-only handle; close error is non-actionable
 
-	br := bufio.NewReader(f)
-	src := br
-	switch m, _ := br.Peek(6); {
-	case len(m) >= 2 && m[0] == 0x1f && m[1] == 0x8b:
-		gz, err := gzip.NewReader(br)
-		if err != nil {
-			return fmt.Errorf("gzip: %w", err)
-		}
-		defer gz.Close() //nolint:errcheck // read-only decompressor; close error is non-actionable
-		src = bufio.NewReader(gz)
-	case len(m) >= 5 && m[0] == 0xfd && string(m[1:5]) == "7zXZ":
-		return errors.New("xz-compressed archives are not supported; recompress the source as gzip")
-	case len(m) >= 4 && m[0] == 0x28 && m[1] == 0xb5 && m[2] == 0x2f && m[3] == 0xfd:
-		return errors.New("zstd-compressed archives are not supported; recompress the source as gzip")
+	return readArchiveStream(bufio.NewReader(f), fn)
+}
+
+// readArchiveStream reads an archive from r: a .deb (ar) is unwrapped to its
+// data.tar member, any gzip/xz/zstd wrapper is stripped, and the inner cpio or
+// tar is read. It is called recursively for a .deb's data.tar member.
+func readArchiveStream(r *bufio.Reader, fn func(archiveEntry) error) error {
+	if m, _ := r.Peek(len(arMagic)); string(m) == arMagic {
+		return readDeb(r, fn)
+	}
+
+	src, closer, err := decompress(r)
+	if err != nil {
+		return err
+	}
+	if closer != nil {
+		defer closer.Close() //nolint:errcheck // read-only decompressor; close error is non-actionable
+	}
+	sb, ok := src.(*bufio.Reader)
+	if !ok {
+		sb = bufio.NewReader(src)
 	}
 
 	// newc cpio carries its magic at offset 0; anything else is treated as tar
 	// (whose "ustar" magic sits at offset 257), and a non-archive surfaces as a
 	// read error from the tar reader.
-	if m, _ := src.Peek(6); string(m) == "070701" {
-		return readCPIO(src, fn)
+	if m, _ := sb.Peek(6); string(m) == "070701" {
+		return readCPIO(sb, fn)
 	}
-	return readTar(src, fn)
+	return readTar(sb, fn)
+}
+
+// decompress wraps r in a decompressor chosen by the leading magic bytes (gzip,
+// xz, or zstd), returning the decompressed reader and an optional io.Closer to
+// release decompressor resources (nil when none is needed). An uncompressed
+// stream is returned unchanged.
+func decompress(r *bufio.Reader) (io.Reader, io.Closer, error) {
+	switch m, _ := r.Peek(6); {
+	case len(m) >= 2 && m[0] == 0x1f && m[1] == 0x8b:
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			return nil, nil, fmt.Errorf("gzip: %w", err)
+		}
+		return gz, gz, nil
+	case len(m) >= 6 && m[0] == 0xfd && string(m[1:6]) == "7zXZ\x00":
+		xr, err := xz.NewReader(r)
+		if err != nil {
+			return nil, nil, fmt.Errorf("xz: %w", err)
+		}
+		return xr, nil, nil // ulikunitz/xz readers hold no resources to close
+	case len(m) >= 4 && m[0] == 0x28 && m[1] == 0xb5 && m[2] == 0x2f && m[3] == 0xfd:
+		zr, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, nil, fmt.Errorf("zstd: %w", err)
+		}
+		rc := zr.IOReadCloser() // Close releases the decoder's goroutines
+		return rc, rc, nil
+	default:
+		return r, nil, nil
+	}
+}
+
+// readDeb reads the data.tar member of a .deb (an ar archive) as the bundle
+// payload. The other members (debian-binary, control.tar) carry only package
+// metadata and are skipped; data.tar holds the installed files.
+func readDeb(r *bufio.Reader, fn func(archiveEntry) error) error {
+	if _, err := r.Discard(len(arMagic)); err != nil {
+		return fmt.Errorf("ar: %w", err)
+	}
+	for {
+		name, size, err := readArHeader(r)
+		if errors.Is(err, io.EOF) {
+			return errors.New("deb: no data.tar member found")
+		}
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(name, "data.tar") {
+			return readArchiveStream(bufio.NewReader(io.LimitReader(r, size)), fn)
+		}
+		// ar members are padded to an even byte boundary.
+		skip := size + size%2
+		if _, err := io.CopyN(io.Discard, r, skip); err != nil {
+			return fmt.Errorf("ar: skip member %q: %w", name, err)
+		}
+	}
+}
+
+// readArHeader reads one 60-byte ar member header, returning the member's name
+// (trailing padding and any GNU "/" suffix trimmed) and content size. It returns
+// io.EOF when the archive has no more members.
+func readArHeader(r io.Reader) (name string, size int64, err error) {
+	var hdr [60]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return "", 0, err // io.EOF here means the last member was consumed
+	}
+	if hdr[58] != 0x60 || hdr[59] != 0x0a {
+		return "", 0, errors.New("ar: bad member header")
+	}
+	name = strings.TrimSuffix(strings.TrimRight(string(hdr[0:16]), " "), "/")
+	sizeStr := strings.TrimSpace(string(hdr[48:58]))
+	size, err = strconv.ParseInt(sizeStr, 10, 64)
+	if err != nil {
+		return "", 0, fmt.Errorf("ar: bad member size %q: %w", sizeStr, err)
+	}
+	return name, size, nil
 }
 
 func readCPIO(r io.Reader, fn func(archiveEntry) error) error {

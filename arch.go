@@ -116,19 +116,38 @@ var arches = map[string]arch{
 		kernelURL: "https://deb.debian.org/debian/dists/trixie/main/installer-s390x/current/images/generic/kernel.debian",
 	},
 	// ppc64 (big-endian PowerPC; ppc64le is little-endian) is the other big-endian
-	// entry. The pseries machine uses a PCI bus, so -out (virtio-9p-pci) works.
+	// entry, and the one wired up to exercise USB on a big-endian guest: the pseries
+	// machine has a PCI bus (so qemu-xhci attaches), but the Debian kernel builds USB
+	// as modules, so a bundle is required to get it. ppc64 big-endian is not a Debian
+	// release arch (debian-installer ships ppc64el), so there is no netboot
+	// kernel+initrd as for arm; the bundle is instead built from debian-ports linux
+	// .deb packages — the bootable vmlinux from linux-binary plus the matching module
+	// tree from linux-modules. Those modules are .ko.xz with no modules.dep, so
+	// dependency resolution reads each module's .modinfo (resolveModules/koDepends)
+	// and the guest decompresses them in-kernel (CONFIG_MODULE_DECOMPRESS, set in the
+	// Debian kernel). -out (virtio-9p-pci) attaches, but 9p is modular here too, so a
+	// test needing the share must load it (e.g. -module 9pnet_virtio).
 	"ppc64": {
 		name:       "ppc64",
 		goarch:     "ppc64",
 		qemuBinary: "qemu-system-ppc64",
 		machine:    "pseries",
-		cpu:        "max",  // verify vs the kernel; pseries defaults to a recent POWER cpu
+		cpu:        "max",  // pseries defaults to a recent POWER cpu
 		console:    "hvc0", // spapr-vty hypervisor console; qemu maps it to -serial stdio
-		// No default kernelURL: ppc64 big-endian is not a Debian release arch (Debian's
-		// debian-installer ships ppc64el, not ppc64), and the ports/Adélie builds are only
-		// .deb packages / ISOs, not a directly downloadable -kernel image. Supply one with
-		// -kernel; build it from debian-ports sid (e.g. extract /boot/vmlinux from a
-		// `debootstrap --arch=ppc64 sid --mirror=https://deb.debian.org/debian-ports` rootfs).
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					URL:     "https://deb.debian.org/debian-ports/pool-ppc64/main/l/linux/linux-binary-7.0.12+deb14-powerpc64_7.0.12-1_ppc64.deb",
+					Archive: true,
+					Files:   map[string]string{"boot/vmlinux-*": "vmlinuz"},
+				},
+				{
+					URL:     "https://deb.debian.org/debian-ports/pool-ppc64/main/l/linux/linux-modules-7.0.12+deb14-powerpc64_7.0.12-1_ppc64.deb",
+					Archive: true,
+					Files:   map[string]string{"usr/lib/modules/*/./**": "modules/"},
+				},
+			},
+		},
 	},
 }
 

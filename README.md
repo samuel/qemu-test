@@ -58,19 +58,29 @@ cross-compiled for that `GOARCH` — runs **big-endian**, catching byte-order bu
 little-endian host can't.
 
 ```sh
-qemu-test -arch s390x ./guesttests                  # default Debian kernelURL; SCLP console, CCW bus
-qemu-test -arch ppc64 -kernel ./vmlinux ./guesttests # needs -kernel; pseries machine, PCI bus
+qemu-test -arch s390x ./guesttests                       # default Debian kernelURL; SCLP console, CCW bus
+qemu-test -arch ppc64 ./guesttests                       # default bundle built from debian-ports .debs
+qemu-test -arch ppc64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on a big-endian guest
 ```
 
 `s390x` uses Debian's `installer-s390x` kernel as its default `kernelURL`, so it boots with no
-`-kernel`. `ppc64` (big-endian) has no default: it is not a Debian release arch (debian-installer
-ships `ppc64el`, not `ppc64`), so supply a kernel with `-kernel` — build one from debian-ports sid
-(e.g. extract `/boot/vmlinux` from a `debootstrap --arch=ppc64 sid` rootfs against
-`https://deb.debian.org/debian-ports`).
+`-kernel`. It ships no modules, so it is best for plain byte-order tests; its CCW machine also
+makes USB awkward, so use `ppc64` when you need USB.
+
+`ppc64` is the big-endian arch wired up for **USB testing**. Its pseries machine has a PCI bus
+(so `qemu-xhci` attaches), but the Debian kernel builds USB as loadable modules — so `ppc64` ships
+a default `bundleConfig` rather than a bare kernel. Since big-endian `ppc64` is not a Debian
+release arch (debian-installer ships `ppc64el`), there is no netboot kernel+initrd as for `arm`;
+the bundle is instead built from **debian-ports `linux-*.deb` packages** (the bootable `vmlinux`
+from `linux-binary` plus the matching module tree from `linux-modules`) — see
+[Building boot bundles](#building-boot-bundles-bundler). On first run the tool fetches those
+`.deb`s and builds the bundle (both cached), so `-arch ppc64` boots with no extra flags; name USB
+modules with `-module` (e.g. `-module xhci_pci`) and attach a controller with `-qemu.device`.
 
 Note: `s390x` uses the CCW bus rather than PCI, so the `-out` shared dir (which attaches a
-`virtio-9p-pci` device) does not work there yet; `ppc64`'s pseries machine is PCI-based, so
-`-out` works.
+`virtio-9p-pci` device) does not work there yet. `ppc64`'s pseries machine is PCI-based, so the
+`-out` device attaches — but its Debian kernel builds 9p as a module, so a test needing the share
+must load it (`-module 9pnet_virtio`).
 
 ### Fetching kernels from a URL
 
@@ -116,8 +126,9 @@ resolves each module's dependencies and loads them — dependencies first — in
 tests run, via `finit_module(2)`. Dependencies come from the bundle's `modules.dep` when present —
 either the text file or its binary `modules.dep.bin` (and likewise `modules.builtin` /
 `modules.builtin.bin`). A tree that ships only `.ko` files (no `modules.dep` at all, e.g. an
-extracted netboot initrd) still works — the tool then reads each module's ELF `.modinfo` to
-discover dependencies (as `depmod` does). You name the capability you care about (say
+extracted netboot initrd, or a Debian `linux-modules` package) still works — the tool then reads
+each module's ELF `.modinfo` to discover dependencies (as `depmod` does), transparently
+decompressing `.ko.gz`/`.ko.xz`/`.ko.zst`. You name the capability you care about (say
 `-module xhci_pci` for USB xHCI) without worrying whether a given arch/kernel compiles it in or
 builds it as a module:
 
@@ -139,34 +150,40 @@ Only the requested modules and their dependencies are packed (never the whole tr
 initramfs stays small. Since initramfs content is unpacked into guest RAM, loading a very large
 set of modules may need more `-mem`; the tool warns when the packed modules are large relative to
 `-mem`. Compressed modules (`.ko.gz`/`.ko.xz`/`.ko.zst`) are loaded as-is and need the guest
-kernel's `CONFIG_MODULE_DECOMPRESS` (and, without a `modules.dep`, only `.ko`/`.ko.gz` modules can
-have their dependencies auto-discovered — `.ko.xz`/`.ko.zst` then load without pulling deps, so
-name any dependencies yourself). Without a bundle (e.g. the default `amd64`, whose kernel has these
-drivers built in), `-module` finds nothing to load and is skipped — runs stay green.
+kernel's `CONFIG_MODULE_DECOMPRESS`; their dependencies are auto-discovered from `.modinfo`
+regardless of compression, so you need not name deps by hand. Without a bundle (e.g. the default
+`amd64`, whose kernel has these drivers built in), `-module` finds nothing to load and is skipped —
+runs stay green.
 
 ### Building boot bundles (`bundler`)
 
-`cmd/bundler` assembles a boot bundle from upstream artifacts — typically a distribution's
-netboot kernel plus the matching modules from its initrd — so you don't have to hand-craft the
-`vmlinuz` + `lib/modules/<release>/` layout above. It downloads each source (cached the same way
-as kernels/bundles), pulls files out of archives by glob, and writes a deterministic `.tgz`.
+`cmd/bundler` assembles a boot bundle from upstream artifacts — a distribution's netboot kernel
+plus the matching modules from its initrd, or the kernel and modules straight out of Debian
+`linux-*.deb` packages — so you don't have to hand-craft the `vmlinuz` + `lib/modules/<release>/`
+layout above. It downloads each source (cached the same way as kernels/bundles), pulls files out of
+archives by glob, and writes a deterministic `.tgz`.
 
 ```sh
 go run ./cmd/bundler -config arm.json -o arm-boot.tgz   # add -v to see progress, -refresh to re-fetch
 ```
 
 The config is a JSON array of **sources**. A *plain* source copies one downloaded file to `dst`.
-An *archive* source (`"archive": true`) selects files via `files`, a map of **glob → destination**:
+An *archive* source (`"archive": true`) selects files via `files`, a map of **glob → destination**.
+The example below pulls a kernel and modules out of two Debian `.deb` packages (as `-arch ppc64`
+does); the glob paths match the files' installed locations inside the package:
 
 ```json
 {
   "sources": [
     {
-      "url": "https://deb.debian.org/.../netboot/vmlinuz",
-      "dst": "vmlinuz"
+      "url": "https://deb.debian.org/debian-ports/.../linux-binary-...-powerpc64_..._ppc64.deb",
+      "archive": true,
+      "files": {
+        "boot/vmlinux-*": "vmlinuz"
+      }
     },
     {
-      "url": "https://deb.debian.org/.../netboot/initrd.gz",
+      "url": "https://deb.debian.org/debian-ports/.../linux-modules-...-powerpc64_..._ppc64.deb",
       "archive": true,
       "files": {
         "usr/lib/modules/*/./**": "modules/"
@@ -176,9 +193,10 @@ An *archive* source (`"archive": true`) selects files via `files`, a map of **gl
 }
 ```
 
-- **Input archives** may be a newc **cpio** (e.g. a Linux `initrd`) or a **tar**, optionally
-  gzip-compressed; the format is detected by content, not by extension. (xz/zstd are not
-  supported — recompress as gzip.)
+- **Input archives** may be a newc **cpio** (e.g. a Linux `initrd`), a **tar**, or a Debian
+  **`.deb`** (an `ar` archive — its `data.tar` member, the installed files, is read; the
+  `debian-binary`/`control.tar` members are skipped). Any of these may be gzip/**xz**/**zstd**-
+  compressed; the format is detected by content, not by extension.
 - **Globs** use doublestar semantics: `*` matches within one path segment, `**` matches any
   depth (`usr/lib/modules/**` is the whole tree).
 - **Destinations** ending in `/` are directories: the matched path with the glob's fixed

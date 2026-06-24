@@ -13,6 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
 
 // resolvedModule is a kernel module to pack into the initramfs and load in the
@@ -23,12 +26,6 @@ type resolvedModule struct {
 	base       string // file base name, e.g. "xhci-pci.ko" or "xhci-pci.ko.xz"
 	compressed bool   // base is a compressed .ko (.gz/.xz/.zst) needing kernel-side decompression
 }
-
-// errModuleCompressionUnsupported reports that a module's dependencies cannot be
-// read from its .modinfo because it is compressed with a codec we cannot decode
-// here (xz/zstd). Such a module still loads (the kernel decompresses it); only its
-// dependency discovery is skipped. Does not apply when modules.dep is present.
-var errModuleCompressionUnsupported = errors.New("compressed module: cannot read .modinfo dependencies")
 
 // resolveModules turns the requested module names into the ordered set of .ko
 // files to load, sourced from the bundle's modules tree at modulesDir. It mirrors
@@ -110,8 +107,9 @@ func resolveModules(modulesDir string, names []string) (load []resolvedModule, s
 // a per-module list of canonical dependency names. It prefers modules.dep (the
 // authoritative depmod output) when present; otherwise it walks the tree to index
 // the .ko files and reads dependencies from each module's ELF .modinfo on demand
-// (cached). A module whose .modinfo cannot be read (xz/zstd-compressed, or not a
-// parseable ELF) yields no dependencies, with a single warning.
+// (cached), transparently decompressing .ko.gz/.ko.xz/.ko.zst. A module whose
+// .modinfo cannot be read (not a parseable ELF, or an unknown compression) yields
+// no dependencies, with a single warning.
 func buildModuleGraph(modulesDir string) (map[string]string, func(string) []string, error) {
 	if hasModulesDep(modulesDir) {
 		depMap, idx, err := parseModulesDep(modulesDir)
@@ -244,8 +242,8 @@ func walkModuleIndex(modulesDir string) (map[string]string, error) {
 }
 
 // koDepends reads a module's direct dependencies from its ELF .modinfo "depends="
-// field, as canonical names. It handles uncompressed .ko and gzip-compressed
-// .ko.gz; xz/zstd-compressed modules return errModuleCompressionUnsupported. A
+// field, as canonical names. It handles uncompressed .ko and gzip/xz/zstd-compressed
+// modules (.ko.gz/.ko.xz/.ko.zst), decompressing into memory to parse the ELF. A
 // module with no .modinfo or no depends= yields no dependencies.
 func koDepends(koPath string) ([]string, error) {
 	f, err := os.Open(koPath)
@@ -254,27 +252,9 @@ func koDepends(koPath string) ([]string, error) {
 	}
 	defer f.Close() //nolint:errcheck // read-only handle; the parsed dependencies are what matter
 
-	base := filepath.Base(koPath)
-	var ra io.ReaderAt
-	switch {
-	case strings.HasSuffix(base, ".ko"):
-		ra = f
-	case strings.HasSuffix(base, ".ko.gz"):
-		gz, err := gzip.NewReader(f)
-		if err != nil {
-			return nil, err
-		}
-		data, rerr := io.ReadAll(gz)
-		cerr := gz.Close()
-		if rerr != nil {
-			return nil, rerr
-		}
-		if cerr != nil {
-			return nil, cerr
-		}
-		ra = bytes.NewReader(data)
-	default:
-		return nil, errModuleCompressionUnsupported
+	ra, err := koReaderAt(f, filepath.Base(koPath))
+	if err != nil {
+		return nil, err
 	}
 
 	ef, err := elf.NewFile(ra)
@@ -290,6 +270,55 @@ func koDepends(koPath string) ([]string, error) {
 		return nil, err
 	}
 	return parseModinfoDepends(data), nil
+}
+
+// koReaderAt returns an io.ReaderAt over a module's uncompressed ELF bytes: a
+// plain .ko is read straight from the file, while a .ko.gz/.ko.xz/.ko.zst is
+// decompressed into memory (modules are small enough to hold).
+func koReaderAt(f *os.File, base string) (io.ReaderAt, error) {
+	switch {
+	case strings.HasSuffix(base, ".ko"):
+		return f, nil
+	case strings.HasSuffix(base, ".ko.gz"):
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return nil, err
+		}
+		return readAllReaderAt(gz, gz)
+	case strings.HasSuffix(base, ".ko.xz"):
+		xr, err := xz.NewReader(f)
+		if err != nil {
+			return nil, err
+		}
+		return readAllReaderAt(xr, nil) // ulikunitz/xz readers hold no resources to close
+	case strings.HasSuffix(base, ".ko.zst"):
+		zr, err := zstd.NewReader(f)
+		if err != nil {
+			return nil, err
+		}
+		rc := zr.IOReadCloser()
+		return readAllReaderAt(rc, rc)
+	default:
+		return nil, fmt.Errorf("unrecognized module file %q", base)
+	}
+}
+
+// readAllReaderAt reads all of r into memory and returns an io.ReaderAt over it,
+// closing closer (when non-nil) afterward so a decompressor's resources are freed.
+// A read error takes precedence over a close error.
+func readAllReaderAt(r io.Reader, closer io.Closer) (io.ReaderAt, error) {
+	data, rerr := io.ReadAll(r)
+	var cerr error
+	if closer != nil {
+		cerr = closer.Close()
+	}
+	if rerr != nil {
+		return nil, rerr
+	}
+	if cerr != nil {
+		return nil, cerr
+	}
+	return bytes.NewReader(data), nil
 }
 
 // parseModinfoDepends extracts the canonical dependency names from a module's

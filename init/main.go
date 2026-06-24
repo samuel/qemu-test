@@ -149,12 +149,12 @@ func runTests() error {
 func writeSys(path string, data []byte) error {
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
-		return fmt.Errorf("failed to open %s for write: %v\n", path, err)
+		return fmt.Errorf("failed to open %s for write: %w", path, err)
 	}
 	_, err = f.Write(data)
 	_ = f.Close()
 	if err != nil {
-		return fmt.Errorf("failed to write to %s: %v\n", path, err)
+		return fmt.Errorf("failed to write to %s: %w", path, err)
 	}
 	return nil
 }
