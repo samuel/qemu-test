@@ -50,7 +50,9 @@ qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
 Debian trixie `linux-image` `.deb`, which carries both the bootable kernel and the full in-tree
 module set in one version-matched package. So they boot with no flags, and any modular driver is
 available via `-module` (e.g. `-module xhci_pci` for USB on the PCI bus, or the 9p modules `-out`
-loads automatically — see below). `riscv64` and `arm` instead build their `bundleConfig` from the
+loads automatically — see below). `ppc64le` (little-endian POWER) is built the same way, from its
+trixie `ppc64el` release `.deb` (see [Big-endian testing](#big-endian-testing) for how it relates to
+big-endian `ppc64`). `riscv64` and `arm` instead build their `bundleConfig` from the
 Debian trixie debian-installer netboot tree — the d-i kernel (uncompressed for riscv64, since
 qemu's riscv64 `-kernel` loader does not decompress) plus the module set out of the netboot initrd.
 That initrd is the *installer's* reduced module set: it ships USB but no 9p module, so `-out`
@@ -68,6 +70,7 @@ qemu-test -arch s390x ./guesttests                       # default Debian linux-
 qemu-test -arch s390x -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on s390x via zPCI
 qemu-test -arch ppc64 ./guesttests                       # default bundle built from debian-ports .debs
 qemu-test -arch ppc64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on a big-endian guest
+qemu-test -arch ppc64le ./guesttests                     # little-endian POWER; trixie release bundle
 ```
 
 `s390x` ships a default `bundleConfig` built from the Debian trixie `linux-image-s390x` `.deb`
@@ -89,10 +92,19 @@ from `linux-binary` plus the matching module tree from `linux-modules`) — see
 `.deb`s and builds the bundle (both cached), so `-arch ppc64` boots with no extra flags; name USB
 modules with `-module` (e.g. `-module xhci_pci`) and attach a controller with `-qemu.device`.
 
-Note: both `ppc64` and `s390x` attach the `-out` shared dir's `virtio-9p-pci` device — `ppc64` on
-its pseries PCI bus, `s390x` via zPCI (the device auto-wraps in a zPCI function on `s390-ccw-virtio`).
-On both, the Debian kernel builds 9p as a module, but `-out` adds the needed 9p modules to the load
-list automatically (so no manual `-module` is required where the bundle ships them).
+`ppc64le` is the **little-endian** sibling — the mainstream production POWER arch and first-class in
+Go. It uses the same `pseries` machine and `qemu-system-ppc64` binary (the kernel selects
+endianness), so it behaves like `ppc64` for USB and `-out`. The difference is the kernel source:
+`ppc64el` *is* a Debian release arch, so its bundle is a single trixie `main`
+`linux-image-powerpc64le` `.deb` carrying both the kernel (`/boot/vmlinux-*`, an LE ELF image) and
+the full module set — like amd64/arm64, rather than the split debian-ports pair big-endian `ppc64`
+needs.
+
+Note: `ppc64`, `ppc64le`, and `s390x` all attach the `-out` shared dir's `virtio-9p-pci` device —
+the two POWER arches on their pseries PCI bus, `s390x` via zPCI (the device auto-wraps in a zPCI
+function on `s390-ccw-virtio`). On all three, the Debian kernel builds 9p as a module, but `-out`
+adds the needed 9p modules to the load list automatically (so no manual `-module` is required where
+the bundle ships them).
 
 ### Fetching kernels from a URL
 

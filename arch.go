@@ -276,6 +276,48 @@ var arches = map[string]arch{
 			},
 		},
 	},
+	// ppc64le (little-endian PowerPC, POWER8+) is the mainstream production POWER arch
+	// and first-class in Go. It boots on the same pseries machine as big-endian ppc64
+	// (qemu-system-ppc64 runs LE guests; endianness is decided by the kernel, and the
+	// recent POWER cpu from -cpu max is LE-capable), so this entry is essentially ppc64
+	// with goarch flipped — but with a better kernel story: ppc64el is a Debian *release*
+	// arch (unlike big-endian ppc64), so the bundle comes from one trixie main
+	// linux-image .deb carrying both the bootable kernel (/boot/vmlinux-*, an LE ELF V2
+	// image qemu's pseries -kernel loader boots directly) and the full in-tree module set
+	// — version-matched by construction, like amd64/arm64, and resolved from the Packages
+	// index (linux-image-powerpc64le meta -> current ABI; no signed/unsigned split, so the
+	// target package has no -unsigned suffix) rather than version-pinned. Modules are
+	// .ko.xz with no modules.dep, resolved via .modinfo and decompressed in-guest
+	// (CONFIG_MODULE_DECOMPRESS). USB (qemu-xhci) and -out (virtio-9p-pci) work on the
+	// pseries PCI bus; both are modular, but -out adds its 9p modules automatically.
+	"ppc64le": {
+		name:       "ppc64le",
+		goarch:     "ppc64le",
+		qemuBinary: "qemu-system-ppc64", // same binary as ppc64; the LE kernel selects endianness
+		machine:    "pseries",
+		cpu:        "max",  // a recent POWER cpu, which is little-endian-capable
+		console:    "hvc0", // spapr-vty hypervisor console; qemu maps it to -serial stdio
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					Debian: &bundler.DebianRef{
+						Mirror:    "https://deb.debian.org/debian",
+						Suite:     "trixie",
+						Component: "main",
+						Arch:      "ppc64el",
+						Via:       "linux-image-powerpc64le",
+						AbiDep:    "linux-image-{abi}-powerpc64le",
+						Package:   "linux-image-{abi}-powerpc64le",
+					},
+					Archive: true,
+					Files: map[string]string{
+						"boot/vmlinux-*":         "vmlinuz",
+						"usr/lib/modules/*/./**": "modules/",
+					},
+				},
+			},
+		},
+	},
 }
 
 // lookupArch returns the configuration for the named architecture, or an error
