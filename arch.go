@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/samuel/qemu-test/internal/bundler"
 )
 
 // arch is the per-architecture configuration needed to boot a guest. All
 // architecture-specific knowledge lives in the arches registry, so adding a new
-// architecture is "drop in a kernel + add one entry" rather than scattered code
-// edits. Today only amd64 ships a kernel; other entries are usable via -kernel.
+// architecture is "set a default kernelURL/bundleURL + add one entry" rather than
+// scattered code edits. -kernel/-bundle override the default for any arch.
 type arch struct {
 	name       string   // user-facing -arch value and kernel dir name, e.g. "amd64"
 	goarch     string   // GOARCH for cross-compiling init + the test binary
@@ -17,9 +19,19 @@ type arch struct {
 	machine    string   // -machine value; "" omits it (amd64 uses the implicit "pc")
 	cpu        string   // -cpu value under TCG; "" omits it (amd64's default boots)
 	console    string   // kernel console= device, e.g. "ttyS0" (amd64), "ttyAMA0" (arm64)
-	kernelURL  string   // default kernel URL, downloaded and cached when there's no embedded kernel; "" = require -kernel
+	kernelURL  string   // default bare-kernel URL, downloaded and cached when there's no embedded kernel; "" = require -kernel/-bundle
 	cmdline    []string // extra kernel -append tokens (e.g. "earlycon"), merged after console=
 	extraArgs  []string // extra qemu argv, appended verbatim, if an arch ever needs them
+
+	// Boot bundle: an archive (or directory) carrying the kernel together with its
+	// matching modules (and optional device trees), so the two never mismatch. The
+	// in-bundle paths default to a convention (see resolveBundle) and need overriding
+	// only when a bundle's layout differs.
+	bundleConfig      *bundler.Config // if set then used to build a bundle
+	bundleURL         string          // default bundle URL (tgz/tar), fetched + cached + extracted; "" = none
+	bundleKernelPath  string          // kernel path within the bundle; "" = convention ("vmlinuz")
+	bundleModulesPath string          // modules-tree path within the bundle; "" = convention ("modules" else "lib/modules/<release>")
+	bundleDTBPath     string          // device-tree path within the bundle passed via -dtb; "" = none
 }
 
 // arches is the registry of known architectures keyed by GOARCH-style name (the
@@ -55,12 +67,24 @@ var arches = map[string]arch{
 		name:       "arm",
 		goarch:     "arm",
 		qemuBinary: "qemu-system-arm",
-		machine:    "virt",
+		machine:    "virt,highmem=off", // restrict PCI to 32-bit address space
 		cpu:        "max",
 		console:    "ttyAMA0",
-		// Debian armhf "armmp" multiplatform kernel: boots on qemu's virt machine with virtio.
-		// Fetched + cached on first run.
-		kernelURL: "https://deb.debian.org/debian/dists/trixie/main/installer-armhf/current/images/netboot/vmlinuz",
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					URL: "https://deb.debian.org/debian/dists/trixie/main/installer-armhf/current/images/netboot/vmlinuz",
+					Dst: "vmlinuz",
+				},
+				{
+					URL:     "https://deb.debian.org/debian/dists/trixie/main/installer-armhf/current/images/netboot/initrd.gz",
+					Archive: true,
+					Files: map[string]string{
+						"usr/lib/modules/*/./**": "modules/",
+					},
+				},
+			},
+		},
 	},
 	"riscv64": {
 		name:       "riscv64",
@@ -127,6 +151,7 @@ func lookupArch(name string) (arch, error) {
 // data: the resolved paths plus the run-time accel and kernel-cmdline choices.
 type bootConfig struct {
 	kernelPath   string
+	dtbPath      string // device tree to pass via -dtb; "" omits it (most machines auto-generate one)
 	initrdPath   string
 	qmpSock      string
 	kvm          bool     // append -enable-kvm and use -cpu host (native virtualization)
@@ -140,6 +165,9 @@ type bootConfig struct {
 // qemu's last-wins rule for the kernel command line.
 func (a arch) bootArgs(c bootConfig) []string {
 	args := []string{"-kernel", c.kernelPath}
+	if c.dtbPath != "" {
+		args = append(args, "-dtb", c.dtbPath)
+	}
 	if a.machine != "" {
 		args = append(args, "-machine", a.machine)
 	}

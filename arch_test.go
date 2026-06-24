@@ -124,6 +124,31 @@ func TestBootArgsDataDriven(t *testing.T) {
 	}
 }
 
+func TestBootArgsDTB(t *testing.T) {
+	a, err := lookupArch("amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With a dtbPath set, -dtb is emitted right after -kernel.
+	got := a.bootArgs(bootConfig{kernelPath: "/tmp/k", dtbPath: "/tmp/board.dtb", initrdPath: "/tmp/i", qmpSock: "/tmp/q"})
+	want := []string{
+		"-kernel", "/tmp/k",
+		"-dtb", "/tmp/board.dtb",
+		"-serial", "stdio",
+		"-display", "none",
+		"-qmp", "unix:/tmp/q,server=on,wait=off",
+		"-append", "console=ttyS0",
+		"-initrd", "/tmp/i",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dtb bootArgs =\n%q\nwant\n%q", got, want)
+	}
+	// With no dtbPath, no -dtb appears (amd64 byte-identity is covered separately).
+	if slices.Contains(a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/i", qmpSock: "/tmp/q"}), "-dtb") {
+		t.Fatal("no dtbPath should emit no -dtb")
+	}
+}
+
 func TestBootArgsBigEndian(t *testing.T) {
 	// The big-endian entries are registered and emit their machine/cpu/console.
 	tests := []struct {

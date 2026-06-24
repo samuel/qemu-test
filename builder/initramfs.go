@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/samuel/qemu-test/builder/internal/cpio"
+	"github.com/samuel/qemu-test/internal/cpio"
 )
 
 // Target is the cross-compilation target for the guest binaries. The same Target

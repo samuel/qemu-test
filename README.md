@@ -3,7 +3,7 @@
 Run a Go package's tests inside a freshly-booted QEMU virtual machine instead of on the host.
 
 `qemu-test` compiles your package's test binary, packs it together with a tiny PID-1 `init`
-into an initramfs, boots `qemu-system-x86_64` with an embedded Linux kernel, runs the tests
+into an initramfs, boots `qemu-system-x86_64` with a Linux kernel, runs the tests
 as init's child, streams their output back over the serial console, and exits `0`/`1` to match
 the result.
 
@@ -19,7 +19,8 @@ touching (or requiring root on) your host.
 - The **qemu system emulator** for your guest architecture on your `PATH` — `qemu-system-x86_64`
   for the default `amd64` guest (e.g. `brew install qemu`, `apt install qemu-system-x86`).
 - **Go 1.26+** to build the tool and cross-compile the guest.
-- No separate kernel needed for `amd64` — a Linux `vmlinuz` is embedded in the binary.
+- No separate kernel needed for `amd64` — its kernel is fetched from a default URL and cached on
+  first run (see [Fetching kernels from a URL](#fetching-kernels-from-a-url)).
 
 By default the guest is `linux/amd64`; your test package is cross-compiled with
 `CGO_ENABLED=0 GOOS=linux GOARCH=<arch>`. On non-x86 hosts QEMU runs under TCG emulation
@@ -32,9 +33,12 @@ much faster. Use `-kvm off` to force TCG or `-kvm on` to require KVM.
 The guest architecture is selected with `-arch <goarch>` (a Go `GOARCH` name; the tool maps it
 to the right qemu binary, e.g. `arm64` → `qemu-system-aarch64`). Most arches define a default
 `kernelURL`, so they boot with no `-kernel` (the kernel is downloaded and cached on first run —
-see [Fetching kernels from a URL](#fetching-kernels-from-a-url)); the rest need a kernel supplied
-with `-kernel`, which accepts either a local path or an `http(s)://` URL. `-kernel` also
-overrides the default for any arch:
+see [Fetching kernels from a URL](#fetching-kernels-from-a-url)). A few instead carry a default
+**bundle** — either a `bundleURL` (a prebuilt archive) or a `bundleConfig` the tool builds locally
+on first run (see [Building boot bundles](#building-boot-bundles-bundler)) — so they boot with a
+matching kernel + modules and no flags. The rest need a kernel supplied with `-kernel`, which
+accepts either a local path or an `http(s)://` URL. `-kernel`/`-bundle` also override the default
+for any arch:
 
 ```sh
 qemu-test -arch riscv64 ./guesttests                          # uses the default Debian kernelURL
@@ -72,19 +76,137 @@ Note: `s390x` uses the CCW bus rather than PCI, so the `-out` shared dir (which 
 
 When `-kernel` is an `http(s)://` URL (or an arch defines a default `kernelURL`), the kernel is
 downloaded once and cached on disk, so later runs reuse it. The cache lives under
-`os.UserCacheDir()/qemu-test/kernels` (override with the `QEMU_TEST_KERNEL_CACHE` env var),
+`os.UserCacheDir()/qemu-test/kernels` (override with the `QEMU_TEST_CACHE` env var),
 keyed by a hash of the URL, alongside a small JSON sidecar recording the HTTP validators
 (ETag / Last-Modified) and a content hash.
 
 Caching is **offline-first**: a cached kernel is used without any network access. Pass
-`-kernel.refresh` to re-check the remote — it issues a conditional request and re-downloads only
+`-refresh` to re-check the remote — it issues a conditional request and re-downloads only
 when the kernel has actually changed (a `304 Not Modified` keeps the cached copy). If the remote
 is unreachable during a refresh but a cached copy exists, that copy is used.
 
 ```sh
 qemu-test -kernel https://example.com/vmlinuz ./guesttests              # download + cache, then reuse
-qemu-test -kernel https://example.com/vmlinuz -kernel.refresh ./guesttests  # re-validate against the remote
+qemu-test -kernel https://example.com/vmlinuz -refresh ./guesttests  # re-validate against the remote
 ```
+
+### Boot bundles and kernel modules
+
+A **boot bundle** lets the tool provide more than a bare kernel: an archive (`.tgz`/`.tar`) — or
+a local directory — carrying the kernel together with its *matching* kernel modules (and,
+optionally, device trees). Because the kernel and modules are packaged together, they always
+match (no version/vermagic mismatch). Pass it with `-bundle <path-or-URL>` (mutually exclusive
+with `-kernel`); a URL is downloaded, cached, and extracted exactly like a kernel, and
+`-refresh` re-validates it against the remote.
+
+Inside the bundle the tool looks for a conventional layout (an arch may override these paths):
+
+```
+bundle.tgz
+├── vmlinuz                       # kernel
+├── modules/                      # contents of /lib/modules/<release>/
+│   ├── modules.dep               #   (optional; modules.dep.bin also accepted)
+│   ├── modules.builtin           #   (optional; modules.builtin.bin also accepted)
+│   └── kernel/.../xhci-pci.ko …
+└── dtb/                          # optional device trees
+```
+
+**Loading modules.** Name the modules you want with `-module <name>` (repeatable). The tool
+resolves each module's dependencies and loads them — dependencies first — in the guest before your
+tests run, via `finit_module(2)`. Dependencies come from the bundle's `modules.dep` when present —
+either the text file or its binary `modules.dep.bin` (and likewise `modules.builtin` /
+`modules.builtin.bin`). A tree that ships only `.ko` files (no `modules.dep` at all, e.g. an
+extracted netboot initrd) still works — the tool then reads each module's ELF `.modinfo` to
+discover dependencies (as `depmod` does). You name the capability you care about (say
+`-module xhci_pci` for USB xHCI) without worrying whether a given arch/kernel compiles it in or
+builds it as a module:
+
+- if the module is **built into the kernel**, there is no `.ko` for it in the tree, so it is
+  skipped (nothing to load);
+- if it is a **loadable module**, its `.ko` (plus dependencies) is packed into the initramfs and
+  loaded.
+
+A module that is missing entirely is likewise assumed built-in and skipped; a module that *is*
+present as a `.ko` but fails to load fails the run. Names use the kernel's convention, so `-` and
+`_` are interchangeable (as with `modprobe`).
+
+```sh
+qemu-test -arch arm64 -bundle https://example.com/arm64-boot.tgz -module xhci_pci ./guesttests
+qemu-test -bundle ./boot -module xhci_pci ./guesttests   # ./boot is an extracted bundle directory
+```
+
+Only the requested modules and their dependencies are packed (never the whole tree), so the
+initramfs stays small. Since initramfs content is unpacked into guest RAM, loading a very large
+set of modules may need more `-mem`; the tool warns when the packed modules are large relative to
+`-mem`. Compressed modules (`.ko.gz`/`.ko.xz`/`.ko.zst`) are loaded as-is and need the guest
+kernel's `CONFIG_MODULE_DECOMPRESS` (and, without a `modules.dep`, only `.ko`/`.ko.gz` modules can
+have their dependencies auto-discovered — `.ko.xz`/`.ko.zst` then load without pulling deps, so
+name any dependencies yourself). Without a bundle (e.g. the default `amd64`, whose kernel has these
+drivers built in), `-module` finds nothing to load and is skipped — runs stay green.
+
+### Building boot bundles (`bundler`)
+
+`cmd/bundler` assembles a boot bundle from upstream artifacts — typically a distribution's
+netboot kernel plus the matching modules from its initrd — so you don't have to hand-craft the
+`vmlinuz` + `lib/modules/<release>/` layout above. It downloads each source (cached the same way
+as kernels/bundles), pulls files out of archives by glob, and writes a deterministic `.tgz`.
+
+```sh
+go run ./cmd/bundler -config arm.json -o arm-boot.tgz   # add -v to see progress, -refresh to re-fetch
+```
+
+The config is a JSON array of **sources**. A *plain* source copies one downloaded file to `dst`.
+An *archive* source (`"archive": true`) selects files via `files`, a map of **glob → destination**:
+
+```json
+{
+  "sources": [
+    {
+      "url": "https://deb.debian.org/.../netboot/vmlinuz",
+      "dst": "vmlinuz"
+    },
+    {
+      "url": "https://deb.debian.org/.../netboot/initrd.gz",
+      "archive": true,
+      "files": {
+        "usr/lib/modules/*/./**": "modules/"
+      }
+    }
+  ]
+}
+```
+
+- **Input archives** may be a newc **cpio** (e.g. a Linux `initrd`) or a **tar**, optionally
+  gzip-compressed; the format is detected by content, not by extension. (xz/zstd are not
+  supported — recompress as gzip.)
+- **Globs** use doublestar semantics: `*` matches within one path segment, `**` matches any
+  depth (`usr/lib/modules/**` is the whole tree).
+- **Destinations** ending in `/` are directories: the matched path with the glob's fixed
+  (non-wildcard) prefix removed is appended under it, so `usr/lib/modules/**` → `lib/modules/`
+  reproduces `lib/modules/<release>/...`. A destination without a trailing `/` is an exact path
+  (valid for a plain file or a glob that matches exactly one entry).
+- A **`.` segment is a keep-anchor** (like `rsync -R`'s `/./`): only the part matched *after* it
+  is kept under a directory destination, dropping everything before — including a variable
+  directory matched by a wildcard. So `usr/lib/modules/*/./**` → `modules/` drops the
+  `<release>` dir matched by `*` and yields a flat `modules/` tree (`modules/modules.dep`,
+  `modules/kernel/...`), whereas `usr/lib/modules/**` → `lib/modules/` keeps it as
+  `lib/modules/<release>/...`. At most one `.` is allowed, and no `**` may precede it.
+- A `url` that isn't an `http(s)` URL is read from the local filesystem, so you can repack local
+  artifacts too.
+
+The result drops straight into `-bundle`:
+
+```sh
+qemu-test -arch arm -bundle ./arm-boot.tgz -module xhci_pci ./guesttests
+```
+
+**As an arch default.** An arch can embed this same config (a `bundleConfig` in its registry
+entry) instead of a `bundleURL`. When it has one and no `-kernel`/`-bundle` overrides it, the tool
+builds the bundle on first run and then uses it exactly like a downloaded `-bundle` — so the arch
+needs no flags. The built `.tgz` is deterministic and cached (keyed by a hash of its config, under
+the same cache dir), so later runs skip the rebuild; a config change rebuilds, and
+`-refresh` re-validates the upstream sources and rebuilds. `arm` (Debian armhf netboot
+kernel + modules from its initrd) ships this way.
 
 ## Install
 
@@ -122,25 +244,27 @@ qemu-test [flags] <package> [test args...]
 
 ### Flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-test.run <regexp>` | | Run only tests matching the regular expression |
-| `-test.v` | `false` | Verbose test output |
-| `-v` | `false` | Verbose (debug) tool logging |
-| `-env KEY=VALUE` | | Set an environment variable for the test binary. Repeatable |
-| `-arch <goarch>` | `amd64` | Guest architecture (Go `GOARCH` name). Most arches have a default kernel; the rest need `-kernel` (a path or URL) |
-| `-kernel <path-or-URL>` | | External kernel image, overriding the arch's default kernel. An `http(s)://` URL is downloaded and cached (see [Fetching kernels from a URL](#fetching-kernels-from-a-url)) |
-| `-kernel.refresh` | `false` | Re-validate a URL kernel against the remote (conditional GET) and re-download if it changed; cached kernels are otherwise used without network access |
-| `-tags <tags>` | | Build tags to pass when compiling the test binary |
-| `-smp <n>` | `2` | Number of guest vCPUs |
-| `-mem <m>` | `1024` | Guest RAM in MB (a bare qemu `-m` value, so `2G` also works) |
-| `-kvm auto\|on\|off` | `auto` | KVM acceleration. `auto` enables it when the guest arch matches the host and `/dev/kvm` is writable; `on` forces it; `off` uses TCG |
-| `-append <tokens>` | | Extra kernel command-line tokens, merged after `console=...` (e.g. `-append "loglevel=7 quiet"`) |
-| `-timeout <dur>` | `5m` | Max wall-clock for the whole run; `0` disables the limit |
-| `-keep` | `false` | Keep the temp dir (initramfs, built `init`, qmp.sock) and log the full qemu command line, instead of removing it on exit |
-| `-out <dir>` | | Share a host dir into the guest at `/out` (virtio-9p) so tests can hand files back |
-| `-qemu.device <dev>` | | Add a qemu `-device` (shorthand for `-qemu.arg "-device <dev>"`). Repeatable |
-| `-qemu.arg <arg>` | | Pass a raw argument to qemu, split on the first whitespace. Repeatable |
+| Flag | Default | Description                                                                                                                                                                                                                                                   |
+|------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `-test.run <regexp>` | | Run only tests matching the regular expression                                                                                                                                                                                                                |
+| `-test.v` | `false` | Verbose test output                                                                                                                                                                                                                                           |
+| `-v` | `false` | Verbose (debug) tool logging                                                                                                                                                                                                                                  |
+| `-env KEY=VALUE` | | Set an environment variable for the test binary. Repeatable                                                                                                                                                                                                   |
+| `-arch <goarch>` | `amd64` | Guest architecture (Go `GOARCH` name). Most arches have a default kernel; the rest need `-kernel` (a path or URL)                                                                                                                                             |
+| `-kernel <path-or-URL>` | | External kernel image, overriding the arch's default kernel. An `http(s)://` URL is downloaded and cached (see [Fetching kernels from a URL](#fetching-kernels-from-a-url))                                                                                   |
+| `-bundle <path-or-URL>` | | Boot bundle (tgz/tar or directory) supplying the kernel plus its matching modules (and optional dtb). A URL is downloaded, cached, and extracted. Mutually exclusive with `-kernel` (see [Boot bundles and kernel modules](#boot-bundles-and-kernel-modules)) |
+| `-refresh` | `false` | Re-validate a URL kernel or bundle against the remote and re-download/re-extract if it changed                                                                                                                                                                 |
+| `-module <name>` | | Load a kernel module (by name) in the guest before tests, resolving its dependencies; modules built into the kernel are skipped. Repeatable. Needs a bundle that ships a modules tree                                                                         |
+| `-tags <tags>` | | Build tags to pass when compiling the test binary                                                                                                                                                                                                             |
+| `-smp <n>` | `2` | Number of guest vCPUs                                                                                                                                                                                                                                         |
+| `-mem <m>` | `1024` | Guest RAM in MB (a bare qemu `-m` value, so `2G` also works)                                                                                                                                                                                                  |
+| `-kvm auto\|on\|off` | `auto` | KVM acceleration. `auto` enables it when the guest arch matches the host and `/dev/kvm` is writable; `on` forces it; `off` uses TCG                                                                                                                           |
+| `-append <tokens>` | | Extra kernel command-line tokens, merged after `console=...` (e.g. `-append "loglevel=7 quiet"`)                                                                                                                                                              |
+| `-timeout <dur>` | `5m` | Max wall-clock for the whole run; `0` disables the limit                                                                                                                                                                                                      |
+| `-keep` | `false` | Keep the temp dir (initramfs, built `init`, qmp.sock) and log the full qemu command line, instead of removing it on exit                                                                                                                                      |
+| `-out <dir>` | | Share a host dir into the guest at `/out` (virtio-9p) so tests can hand files back                                                                                                                                                                            |
+| `-qemu.device <dev>` | | Add a qemu `-device` (shorthand for `-qemu.arg "-device <dev>"`). Repeatable                                                                                                                                                                                  |
+| `-qemu.arg <arg>` | | Pass a raw argument to qemu, split on the first whitespace. Repeatable                                                                                                                                                                                        |
 
 `-test.run` / `-test.v` are conveniences; you can equivalently pass them as trailing test args.
 
@@ -212,12 +336,14 @@ qemu-test -append "loglevel=7" ./mypkg
 
 1. **Build** the guest `init` (from embedded source) and the package's test binary, both
    cross-compiled to `linux/<arch>` (the same `GOARCH` for both, so they share an architecture).
-2. **Pack** them — plus `test-args.txt` (forwarded test args) and `test-env.txt` (`-env`
-   values) — into a deterministic newc-cpio initramfs.
+2. **Pack** them — plus `test-args.txt` (forwarded test args), `test-env.txt` (`-env` values),
+   and any requested kernel modules with `test-modules.txt` (their dependency-ordered load list)
+   — into a deterministic newc-cpio initramfs.
 3. **Boot** the architecture's qemu binary (default `qemu-system-x86_64`) with the kernel,
    serial on stdio, display off, and a QMP control socket.
-4. **Run**: `init` mounts `/proc`, `/sys`, `/dev`, etc. (and `/out` if shared), sets the env,
-   runs the test binary as its child, prints the result, and always powers the VM off.
+4. **Run**: `init` mounts `/proc`, `/sys`, `/dev`, etc. (and `/out` if shared), loads any
+   requested kernel modules, sets the env, runs the test binary as its child, prints the result,
+   and always powers the VM off.
 5. **Report**: the host parses the serial console for a verdict and exits accordingly.
 
 The guest and host communicate over a small line protocol on the serial console:
@@ -229,7 +355,7 @@ The guest and host communicate over a small line protocol on the serial console:
 ## Developing this tool
 
 ```sh
-# Host-side unit tests (builder, cpio, flag parsing, log parser) — no qemu needed
+# Host-side unit tests (builder, cpio, flag parsing, log parser, bundler) — no qemu needed
 go test ./...
 
 # End-to-end against the sample package (requires qemu-system-x86_64)

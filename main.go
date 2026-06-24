@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,6 +25,8 @@ import (
 	"time"
 
 	"github.com/samuel/qemu-test/builder"
+	"github.com/samuel/qemu-test/internal/bundler"
+	"github.com/samuel/qemu-test/internal/cache"
 )
 
 // errNoTests reports that the target package has no test files, so there is no
@@ -37,9 +40,12 @@ func main() {
 	flag.Var(&qemuRawArgs, "qemu.arg", "Raw argument(s) to pass to qemu, split on the first whitespace (e.g. -qemu.arg \"-drive if=none,id=d0,file=disk.img,format=raw\"). Repeatable.")
 	var envVars MultiStringFlag
 	flag.Var(&envVars, "env", "Environment variable KEY=VALUE for the test binary; repeatable")
-	flagArch := flag.String("arch", "amd64", "Guest architecture (GOARCH name); only amd64 ships a kernel, others need -kernel (a path or URL)")
-	flagKernel := flag.String("kernel", "", "Path or http(s) URL of an external kernel image, overriding the embedded kernel for -arch; URLs are downloaded and cached")
-	flagKernelRefresh := flag.Bool("kernel.refresh", false, "Re-validate a URL kernel against the remote (conditional GET) and re-download if changed; cached kernels are otherwise used without network access")
+	var modules MultiStringFlag
+	flag.Var(&modules, "module", "Kernel module to load in the guest before tests, by name (repeatable); dependencies are resolved automatically and modules already built into the kernel are skipped")
+	flagArch := flag.String("arch", "amd64", "Guest architecture (GOARCH name); the kernel is fetched from the arch's default URL unless -kernel or -bundle is given")
+	flagKernel := flag.String("kernel", "", "Path or http(s) URL of a bare kernel image, overriding the arch default; URLs are downloaded and cached. Mutually exclusive with -bundle")
+	flagBundle := flag.String("bundle", "", "Path or http(s) URL of a boot bundle (tgz/tar or directory) supplying the kernel plus its matching modules (and optional dtb); URLs are downloaded, cached, and extracted. Mutually exclusive with -kernel")
+	flagRefresh := flag.Bool("refresh", false, "Re-validate a URL kernel or bundle against the remote (conditional GET) and re-download/re-extract if changed")
 	flagTags := flag.String("tags", "", "Build tags to pass when compiling the test binary")
 	flagTestRun := flag.String("test.run", "", "Run only tests matching regular expression")
 	flagTestVerbose := flag.Bool("test.v", false, "Enable verbose test output")
@@ -70,6 +76,11 @@ func main() {
 			_, _ = fmt.Fprintf(os.Stderr, "Failed: -env %q must be KEY=VALUE\n", e)
 			os.Exit(2)
 		}
+	}
+
+	if *flagBundle != "" && *flagKernel != "" {
+		_, _ = fmt.Fprintln(os.Stderr, "Failed: -bundle and -kernel are mutually exclusive")
+		os.Exit(2)
 	}
 
 	a, err := lookupArch(*flagArch)
@@ -147,7 +158,10 @@ func main() {
 	if err := run(ctx, runOpts{
 		arch:           a,
 		kernelOverride: *flagKernel,
-		kernelRefresh:  *flagKernelRefresh,
+		bundleOverride: *flagBundle,
+		refresh:        *flagRefresh,
+		modules:        modules,
+		mem:            *flagMem,
 		testPath:       testPath,
 		testBuildArgs:  testBuildArgs,
 		testArgs:       testArgs,
@@ -204,7 +218,10 @@ func resolveKVM(mode, guestArch string) (bool, error) {
 type runOpts struct {
 	arch           arch
 	kernelOverride string
-	kernelRefresh  bool // re-validate URL kernels against the remote (-kernel.refresh)
+	bundleOverride string   // -bundle path or URL (boot bundle: kernel + modules + dtb)
+	refresh        bool     // re-validate a URL kernel or bundle against the remote (-refresh)
+	modules        []string // kernel modules to load in the guest before tests (-module)
+	mem            string   // guest RAM (-mem), used for the module-size guardrail
 	testPath       string
 	testBuildArgs  []string // build flags for the test binary (e.g. -tags, -cover)
 	testArgs       []string // argv passed to the test binary in the guest
@@ -245,9 +262,9 @@ func run(ctx context.Context, o runOpts) error {
 		return fmt.Errorf("failed to copy embed files: %w", err)
 	}
 
-	// Resolve the kernel before the (slower) guest build so a bad -kernel path/URL
-	// or a missing embedded kernel fails fast.
-	kernelPath, err := resolveKernel(ctx, a, o.kernelOverride, o.kernelRefresh, tempPath)
+	// Resolve the kernel (and, for a bundle, its modules + dtb) before the (slower)
+	// guest build so a bad -kernel/-bundle path/URL or layout fails fast.
+	env, err := resolveBootEnv(ctx, a, o, tempPath)
 	if err != nil {
 		return err
 	}
@@ -257,6 +274,13 @@ func run(ctx context.Context, o runOpts) error {
 	// test-env.txt carries KEY=VALUE lines for the guest to set on the test
 	// binary's environment (see -env); empty when none were given.
 	extraFiles["test-env.txt"] = bytes.NewReader([]byte(strings.Join(o.testEnv, "\n")))
+	// test-modules.txt lists the in-guest .ko paths (dependency order) the guest
+	// loads before tests; empty when no modules were requested or all are built in.
+	modPaths, err := addModules(o, env.modulesDir, extraFiles)
+	if err != nil {
+		return err
+	}
+	extraFiles["test-modules.txt"] = bytes.NewReader([]byte(strings.Join(modPaths, "\n")))
 
 	ifs, err := os.Create(filepath.Join(tempPath, "initramfs.gz"))
 	if err != nil {
@@ -272,7 +296,8 @@ func run(ctx context.Context, o runOpts) error {
 
 	qmpSock := filepath.Join(tempPath, "qmp.sock")
 	qemuArgs := append(o.qemuArgs, a.bootArgs(bootConfig{
-		kernelPath:   kernelPath,
+		kernelPath:   env.kernelPath,
+		dtbPath:      env.dtbPath,
 		initrdPath:   ifs.Name(),
 		qmpSock:      qmpSock,
 		kvm:          o.kvm,
@@ -454,39 +479,277 @@ func copyEmbedFS(out *os.Root, efs embed.FS) error {
 	})
 }
 
-// resolveKernel returns the host path to the kernel image to boot. Precedence:
-// an explicit -kernel override (a local path or an http(s) URL) wins for any arch;
-// otherwise the arch's embedded kernel — already copied into tempPath — is used;
-// otherwise the arch's default kernelURL is fetched. URL kernels are downloaded
-// once and cached (see fetchKernel); refresh re-validates them against the remote.
-func resolveKernel(ctx context.Context, a arch, override string, refresh bool, tempPath string) (string, error) {
-	// A local -kernel path (not a URL) resolves immediately.
-	if override != "" && !isKernelURL(override) {
-		path, err := filepath.Abs(override)
+// bootEnv is the resolved set of host artifacts needed to boot a guest: the kernel
+// plus, when a bundle supplies them, a matching modules tree and a device tree.
+type bootEnv struct {
+	kernelPath string
+	modulesDir string // path to the modules tree (contains modules.dep), or "" if none
+	dtbPath    string // device tree to pass via -dtb, or "" if none
+}
+
+// resolveBootEnv resolves what to boot. Precedence: a -bundle override → a -kernel
+// override (bare kernel) → the arch's bundleConfig (built locally) → the arch's
+// bundleURL → the arch's kernelURL (bare kernel) → error. -bundle and -kernel are
+// mutually exclusive (rejected earlier). URL kernels/bundles are downloaded once
+// and cached; refresh re-validates them. tempPath receives a local tarball bundle's
+// extracted tree.
+func resolveBootEnv(ctx context.Context, a arch, o runOpts, tempPath string) (bootEnv, error) {
+	switch {
+	case o.bundleOverride != "":
+		return resolveBundle(ctx, a, o.bundleOverride, o.refresh, tempPath)
+	case o.kernelOverride != "":
+		kp, err := resolveBareKernel(ctx, o.kernelOverride, o.refresh)
+		return bootEnv{kernelPath: kp}, err
+	case a.bundleConfig != nil:
+		return resolveBuiltBundle(ctx, a, o, tempPath)
+	case a.bundleURL != "":
+		return resolveBundle(ctx, a, a.bundleURL, o.refresh, tempPath)
+	case a.kernelURL != "":
+		kp, err := resolveBareKernel(ctx, a.kernelURL, o.refresh)
+		return bootEnv{kernelPath: kp}, err
+	default:
+		return bootEnv{}, fmt.Errorf("no kernel or bundle for arch %q; supply one with -kernel or -bundle <path-or-URL>", a.name)
+	}
+}
+
+// resolveBuiltBundle builds the arch's bundleConfig into a boot bundle with the
+// bundler package, then resolves it exactly like a downloaded bundle. The bundle is
+// deterministic, so it is cached by a hash of its config (a config change rebuilds)
+// to skip the build's heavy work — fetching the upstream sources and selecting files
+// out of them — on later runs; the bundler caches the source downloads themselves.
+// -refresh re-validates those sources against the remote and rebuilds.
+func resolveBuiltBundle(ctx context.Context, a arch, o runOpts, tempPath string) (bootEnv, error) {
+	cacheDir, err := cache.CacheDir()
+	if err != nil {
+		return bootEnv{}, err
+	}
+	cfgJSON, err := json.Marshal(a.bundleConfig)
+	if err != nil {
+		return bootEnv{}, fmt.Errorf("encode bundle config for arch %q: %w", a.name, err)
+	}
+	builtPath := filepath.Join(cacheDir, cache.CacheKey(string(cfgJSON))+".tgz")
+	if _, err := os.Stat(builtPath); err != nil || o.refresh {
+		if err := bundler.Bundle(ctx, a.bundleConfig, builtPath, cacheDir, o.refresh); err != nil {
+			return bootEnv{}, fmt.Errorf("build bundle for arch %q: %w", a.name, err)
+		}
+	} else {
+		slog.Debug("using cached built bundle", "arch", a.name, "path", builtPath)
+	}
+	// From here the built bundle is used exactly like a downloaded one: extracted
+	// into the temp dir and resolved into its kernel/modules/dtb paths.
+	return resolveBundle(ctx, a, builtPath, o.refresh, tempPath)
+}
+
+// resolveBareKernel resolves a single kernel source (a local path or an http(s)
+// URL) to a host path, fetching + caching URL kernels.
+func resolveBareKernel(ctx context.Context, src string, refresh bool) (string, error) {
+	if !cache.IsHTTPURL(src) {
+		path, err := filepath.Abs(src)
 		if err != nil {
 			return "", err
 		}
 		if _, err := os.Stat(path); err != nil {
-			return "", fmt.Errorf("kernel %q: %w", override, err)
+			return "", fmt.Errorf("kernel %q: %w", src, err)
 		}
 		return path, nil
 	}
-
-	var fetchURL string
-	switch {
-	case override != "": // a URL (local paths handled above)
-		fetchURL = override
-	case a.kernelURL != "":
-		fetchURL = a.kernelURL
-	default:
-		return "", fmt.Errorf("no embedded kernel for arch %q; supply one with -kernel <path-or-URL>", a.name)
-	}
-
-	cacheDir, err := kernelCacheDir()
+	cacheDir, err := cache.CacheDir()
 	if err != nil {
 		return "", err
 	}
-	return fetchKernel(ctx, nil, fetchURL, cacheDir, refresh)
+	return cache.FetchKernel(ctx, nil, src, cacheDir, refresh)
+}
+
+// resolveBundle resolves a boot bundle from src — an http(s) URL (fetched, cached,
+// and extracted), a local tarball (extracted into tempPath), or a local directory
+// (used in place) — into the kernel/modules/dtb paths it carries.
+func resolveBundle(ctx context.Context, a arch, src string, refresh bool, tempPath string) (bootEnv, error) {
+	var dir string
+	if cache.IsHTTPURL(src) {
+		cacheDir, err := cache.CacheDir()
+		if err != nil {
+			return bootEnv{}, err
+		}
+		dir, err = cache.FetchBundle(ctx, nil, src, cacheDir, refresh)
+		if err != nil {
+			return bootEnv{}, err
+		}
+	} else {
+		abs, err := filepath.Abs(src)
+		if err != nil {
+			return bootEnv{}, err
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return bootEnv{}, fmt.Errorf("bundle %q: %w", src, err)
+		}
+		if info.IsDir() {
+			dir = abs
+		} else {
+			dir = filepath.Join(tempPath, "bundle")
+			if err := cache.ExtractArchiveAtomic(abs, dir, tempPath); err != nil {
+				return bootEnv{}, fmt.Errorf("extract bundle %q: %w", src, err)
+			}
+		}
+	}
+	return bundleEnv(a, dir)
+}
+
+// bundleEnv resolves the kernel/modules/dtb paths inside an extracted bundle
+// directory, defaulting to the layout convention and honoring any arch overrides.
+func bundleEnv(a arch, dir string) (bootEnv, error) {
+	kernelRel := a.bundleKernelPath
+	if kernelRel == "" {
+		kernelRel = "vmlinuz"
+	}
+	kernelPath := filepath.Join(dir, kernelRel)
+	if _, err := os.Stat(kernelPath); err != nil {
+		return bootEnv{}, fmt.Errorf("bundle kernel %q: %w", kernelRel, err)
+	}
+	modulesDir, err := bundleModulesDir(a, dir)
+	if err != nil {
+		return bootEnv{}, err
+	}
+	var dtbPath string
+	if a.bundleDTBPath != "" {
+		dtbPath = filepath.Join(dir, a.bundleDTBPath)
+		if _, err := os.Stat(dtbPath); err != nil {
+			return bootEnv{}, fmt.Errorf("bundle dtb %q: %w", a.bundleDTBPath, err)
+		}
+	}
+	return bootEnv{kernelPath: kernelPath, modulesDir: modulesDir, dtbPath: dtbPath}, nil
+}
+
+// bundleModulesDir locates the modules tree inside a bundle: the arch override if
+// set, else "modules/", else the sole "lib/modules/<release>/". A tree is detected
+// by modules.dep or any .ko file (isModuleTree), so trees that ship only modules
+// (no depmod output) still count. It returns "" (and no error) when the bundle
+// carries no modules tree (a bare kernel; modules built in).
+func bundleModulesDir(a arch, dir string) (string, error) {
+	if a.bundleModulesPath != "" {
+		md := filepath.Join(dir, a.bundleModulesPath)
+		if isModuleTree(md) {
+			return md, nil
+		}
+		return "", fmt.Errorf("bundle modules path %q is not a modules tree (no modules.dep or .ko files)", a.bundleModulesPath)
+	}
+	if md := filepath.Join(dir, "modules"); isModuleTree(md) {
+		return md, nil
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "lib", "modules"))
+	if err != nil {
+		return "", nil // no lib/modules → no modules tree
+	}
+	var releases []string
+	for _, e := range entries {
+		if e.IsDir() && isModuleTree(filepath.Join(dir, "lib", "modules", e.Name())) {
+			releases = append(releases, e.Name())
+		}
+	}
+	switch len(releases) {
+	case 0:
+		return "", nil
+	case 1:
+		return filepath.Join(dir, "lib", "modules", releases[0]), nil
+	default:
+		return "", fmt.Errorf("bundle has multiple module trees under lib/modules (%s); set the arch bundleModulesPath", strings.Join(releases, ", "))
+	}
+}
+
+// isModuleTree reports whether dir looks like a kernel modules tree: it has a
+// modules.dep (text or .bin), or contains at least one .ko file (so a tree that
+// ships only modules — e.g. an extracted netboot initrd — is recognized too).
+func isModuleTree(dir string) bool {
+	if hasModulesDep(dir) {
+		return true
+	}
+	var found bool
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // a walk error just means we didn't find a .ko here
+		}
+		if !d.IsDir() && isKoFile(d.Name()) {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// addModules resolves the requested -module names against the bundle's modules
+// tree and packs each resulting .ko (in dependency order) into extraFiles at the
+// initramfs root, by basename, returning the in-guest names the guest loads (see
+// test-modules.txt). Packing flat at the root matches the other initramfs files
+// (init, tests, test-*.txt) and avoids the cpio archive needing directory records
+// (BuildInitramfs emits only regular files, and the kernel's initramfs unpacker
+// does not create parent dirs); resolveModules already guarantees unique basenames.
+// Modules absent from the tree are presumed built in and skipped. .ko files are
+// small (only the requested dependency closure is packed), so they are read into
+// memory; a guardrail warns when their total is large relative to guest RAM,
+// since initramfs content occupies guest memory.
+func addModules(o runOpts, modulesDir string, extraFiles map[string]io.Reader) ([]string, error) {
+	load, skipped, err := resolveModules(modulesDir, o.modules)
+	if err != nil {
+		return nil, err
+	}
+	if len(skipped) != 0 {
+		slog.Debug("modules presumed built in (not loaded)", "modules", skipped)
+	}
+	var guestNames []string
+	var total int64
+	for _, m := range load {
+		data, err := os.ReadFile(m.hostPath)
+		if err != nil {
+			return nil, fmt.Errorf("read module %q: %w", m.hostPath, err)
+		}
+		extraFiles[m.base] = bytes.NewReader(data)
+		guestNames = append(guestNames, m.base)
+		total += int64(len(data))
+		slog.Debug("packing module", "name", m.name, "file", m.base, "bytes", len(data))
+	}
+	if total > 0 {
+		warnModuleMemory(total, o.mem)
+	}
+	return guestNames, nil
+}
+
+// warnModuleMemory warns when the packed modules' bytes are a large fraction
+// (>=25%) of guest RAM, since the initramfs is unpacked into guest memory.
+func warnModuleMemory(totalBytes int64, mem string) {
+	memBytes, ok := parseMemBytes(mem)
+	if !ok || memBytes <= 0 {
+		return
+	}
+	if totalBytes*4 >= memBytes {
+		slog.Warn("packed kernel modules are large relative to guest RAM; the initramfs is unpacked into guest memory — consider raising -mem",
+			"moduleBytes", totalBytes, "memBytes", memBytes)
+	}
+}
+
+// parseMemBytes parses a qemu -m value (a bare number of MiB, or one with a
+// B/K/M/G suffix) into bytes. The bool is false for an unparseable value.
+func parseMemBytes(mem string) (int64, bool) {
+	s := strings.TrimSpace(mem)
+	if s == "" {
+		return 0, false
+	}
+	mult := int64(1 << 20) // qemu's default unit is MiB
+	switch s[len(s)-1] {
+	case 'b', 'B':
+		mult, s = 1, s[:len(s)-1]
+	case 'k', 'K':
+		mult, s = 1<<10, s[:len(s)-1]
+	case 'm', 'M':
+		mult, s = 1<<20, s[:len(s)-1]
+	case 'g', 'G':
+		mult, s = 1<<30, s[:len(s)-1]
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n * mult, true
 }
 
 func buildTests(ctx context.Context, out io.Writer, target builder.Target, initSrcPath, testPath string, testBuildArgs []string, extraFiles map[string]io.Reader) error {

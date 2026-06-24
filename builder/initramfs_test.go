@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samuel/qemu-test/builder/internal/cpio"
+	"github.com/samuel/qemu-test/internal/cpio"
 )
 
 func TestBuildInitramfs(t *testing.T) {

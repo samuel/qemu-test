@@ -1,4 +1,4 @@
-package main
+package cache
 
 import (
 	"context"
@@ -15,9 +15,14 @@ import (
 	"time"
 )
 
-// isKernelURL reports whether s is an http(s) URL rather than a local filesystem
+const (
+	KindKernel = "kernel"
+	KindBundle = "bundle"
+)
+
+// IsHTTPURL reports whether s is an http(s) URL rather than a local filesystem
 // path, so -kernel and arch.kernelURL can accept either form.
-func isKernelURL(s string) bool {
+func IsHTTPURL(s string) bool {
 	u, err := url.Parse(s)
 	if err != nil {
 		return false
@@ -25,19 +30,19 @@ func isKernelURL(s string) bool {
 	return u.Scheme == "http" || u.Scheme == "https"
 }
 
-// kernelCacheDir returns the persistent on-disk directory where downloaded kernels
-// are cached, creating it if needed. It honors QEMU_TEST_KERNEL_CACHE for an
+// CacheDir returns the persistent on-disk directory where downloaded kernels
+// are cached, creating it if needed. It honors QEMU_TEST_CACHE for an
 // explicit override (also the seam used by tests); otherwise it is
 // os.UserCacheDir()/qemu-test/kernels. It is only consulted when a kernel actually
 // needs fetching, so embedded/local-path runs never depend on a usable cache dir.
-func kernelCacheDir() (string, error) {
-	dir := os.Getenv("QEMU_TEST_KERNEL_CACHE")
+func CacheDir() (string, error) {
+	dir := os.Getenv("QEMU_TEST_CACHE")
 	if dir == "" {
 		base, err := os.UserCacheDir()
 		if err != nil {
 			return "", fmt.Errorf("locate user cache dir: %w", err)
 		}
-		dir = filepath.Join(base, "qemu-test", "kernels")
+		dir = filepath.Join(base, "qemu-test")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create kernel cache dir %q: %w", dir, err)
@@ -45,16 +50,16 @@ func kernelCacheDir() (string, error) {
 	return dir, nil
 }
 
-// cacheKey derives a stable, filesystem-safe cache filename from a URL.
-func cacheKey(rawURL string) string {
+// CacheKey derives a stable, filesystem-safe cache filename from a URL.
+func CacheKey(rawURL string) string {
 	sum := sha256.Sum256([]byte(rawURL))
 	return hex.EncodeToString(sum[:])
 }
 
-// kernelMeta is the JSON sidecar stored next to a cached kernel. It records the
-// HTTP validators used for a conditional refresh (-kernel.refresh) plus integrity
+// Meta is the JSON sidecar stored next to a cached file. It records the
+// HTTP validators used for a conditional refresh plus integrity
 // and provenance info.
-type kernelMeta struct {
+type Meta struct {
 	URL          string `json:"url"`
 	ETag         string `json:"etag,omitempty"`
 	LastModified string `json:"lastModified,omitempty"`
@@ -63,9 +68,9 @@ type kernelMeta struct {
 	FetchedAt    string `json:"fetchedAt"`
 }
 
-// loadKernelMeta reads the JSON sidecar at path.
-func loadKernelMeta(path string) (kernelMeta, error) {
-	var m kernelMeta
+// LoadMeta reads the JSON sidecar at path.
+func LoadMeta(path string) (Meta, error) {
+	var m Meta
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return m, err
@@ -107,37 +112,44 @@ func firstErr(a, b error) error {
 	return b
 }
 
-// fetchKernel returns the on-disk path to the kernel at rawURL, downloading and
-// caching it under cacheDir on first use. A cached kernel is reused without any
+// FetchKernel returns the on-disk path to the kernel at rawURL, downloading and
+// caching it under cacheDir on first use. See FetchToCache for the caching/refresh
+// semantics; a nil client uses http.DefaultClient and ctx governs cancellation.
+func FetchKernel(ctx context.Context, client *http.Client, rawURL, cacheDir string, refresh bool) (string, error) {
+	return FetchToCache(ctx, client, rawURL, cacheDir, refresh, KindKernel)
+}
+
+// FetchToCache returns the on-disk path to the artifact at rawURL, downloading and
+// caching it under cacheDir on first use. A cached artifact is reused without any
 // network access unless refresh is set, in which case a conditional GET (using the
 // stored ETag/Last-Modified) re-downloads only when the remote has actually
 // changed. If the network is unreachable but a cached copy exists, that copy is
-// used. A nil client uses http.DefaultClient; ctx governs cancellation/timeout.
-func fetchKernel(ctx context.Context, client *http.Client, rawURL, cacheDir string, refresh bool) (string, error) {
+// used. kind labels the artifact in log and error messages ("kernel", "bundle").
+func FetchToCache(ctx context.Context, client *http.Client, rawURL, cacheDir string, refresh bool, kind string) (string, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	bodyPath := filepath.Join(cacheDir, cacheKey(rawURL))
+	bodyPath := filepath.Join(cacheDir, CacheKey(rawURL))
 	metaPath := bodyPath + ".json"
 
 	_, statErr := os.Stat(bodyPath)
 	cached := statErr == nil
 
-	// Offline-first: a cached kernel is used as-is unless an explicit refresh was
+	// Offline-first: a cached artifact is used as-is unless an explicit refresh was
 	// requested.
 	if cached && !refresh {
-		slog.Debug("using cached kernel", "url", rawURL, "path", bodyPath)
+		slog.Debug("using cached "+kind, "url", rawURL, "path", bodyPath)
 		return bodyPath, nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("kernel request %q: %w", rawURL, err)
+		return "", fmt.Errorf("%s request %q: %w", kind, rawURL, err)
 	}
 	// On refresh, send the stored validators so an unchanged remote answers 304 and
 	// we skip the re-download.
 	if cached {
-		if meta, err := loadKernelMeta(metaPath); err == nil {
+		if meta, err := LoadMeta(metaPath); err == nil {
 			if meta.ETag != "" {
 				req.Header.Set("If-None-Match", meta.ETag)
 			}
@@ -150,21 +162,21 @@ func fetchKernel(ctx context.Context, client *http.Client, rawURL, cacheDir stri
 	resp, err := client.Do(req)
 	if err != nil {
 		if cached {
-			slog.Warn("kernel refresh failed; using cached copy", "url", rawURL, "err", err)
+			slog.Warn(kind+" refresh failed; using cached copy", "url", rawURL, "err", err)
 			return bodyPath, nil
 		}
-		return "", fmt.Errorf("download kernel %q: %w", rawURL, err)
+		return "", fmt.Errorf("download %s %q: %w", kind, rawURL, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // read-path response body; close error is non-actionable
 
 	switch resp.StatusCode {
 	case http.StatusNotModified:
-		slog.Debug("cached kernel still current", "url", rawURL)
+		slog.Debug("cached "+kind+" still current", "url", rawURL)
 		return bodyPath, nil
 	case http.StatusOK:
 		// fall through to download
 	default:
-		return "", fmt.Errorf("download kernel %q: unexpected status %s", rawURL, resp.Status)
+		return "", fmt.Errorf("download %s %q: unexpected status %s", kind, rawURL, resp.Status)
 	}
 
 	// Stream to a temp file, hashing as we copy, then atomically rename into place.
@@ -178,14 +190,14 @@ func fetchKernel(ctx context.Context, client *http.Client, rawURL, cacheDir stri
 	closeErr := tmp.Close()
 	if err := firstErr(copyErr, closeErr); err != nil {
 		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup
-		return "", fmt.Errorf("download kernel %q: %w", rawURL, err)
+		return "", fmt.Errorf("download %s %q: %w", kind, rawURL, err)
 	}
 	if err := os.Rename(tmpName, bodyPath); err != nil {
 		_ = os.Remove(tmpName) //nolint:errcheck // best-effort cleanup
-		return "", fmt.Errorf("cache kernel %q: %w", rawURL, err)
+		return "", fmt.Errorf("cache %s %q: %w", kind, rawURL, err)
 	}
 
-	meta := kernelMeta{
+	meta := Meta{
 		URL:          rawURL,
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
@@ -195,11 +207,38 @@ func fetchKernel(ctx context.Context, client *http.Client, rawURL, cacheDir stri
 	}
 	b, err := json.Marshal(meta)
 	if err != nil {
-		return "", fmt.Errorf("encode kernel meta: %w", err)
+		return "", fmt.Errorf("encode %s meta: %w", kind, err)
 	}
 	if err := writeFileAtomic(metaPath, b); err != nil {
-		return "", fmt.Errorf("write kernel meta: %w", err)
+		return "", fmt.Errorf("write %s meta: %w", kind, err)
 	}
-	slog.Info("downloaded kernel", "url", rawURL, "path", bodyPath, "size", n)
+	slog.Info("downloaded "+kind, "url", rawURL, "path", bodyPath, "size", n)
 	return bodyPath, nil
+}
+
+// FetchBundle returns the path to the extracted boot-bundle directory for the
+// archive at rawURL. The archive is downloaded and cached like a kernel (see
+// FetchToCache), then extracted once into a sibling "<cache>.d" directory; later
+// runs reuse the extracted tree without re-extracting unless refresh forces a
+// re-download (and thus a re-extraction). Extraction is atomic: a fresh tree is
+// built in a temp dir and renamed into place, so a crash never leaves a partial
+// directory that looks complete.
+func FetchBundle(ctx context.Context, client *http.Client, rawURL, cacheDir string, refresh bool) (string, error) {
+	archivePath, err := FetchToCache(ctx, client, rawURL, cacheDir, refresh, KindBundle)
+	if err != nil {
+		return "", err
+	}
+	extractDir := archivePath + ".d"
+	marker := filepath.Join(extractDir, ".extracted")
+	if !refresh {
+		if _, err := os.Stat(marker); err == nil {
+			slog.Debug("using extracted bundle", "url", rawURL, "path", extractDir)
+			return extractDir, nil
+		}
+	}
+	if err := ExtractArchiveAtomic(archivePath, extractDir, cacheDir); err != nil {
+		return "", fmt.Errorf("extract bundle %q: %w", rawURL, err)
+	}
+	slog.Info("extracted bundle", "url", rawURL, "path", extractDir)
+	return extractDir, nil
 }

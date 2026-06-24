@@ -41,7 +41,9 @@ Examples:
   qemu-test -env KEY=value -env OTHER=1 ./tests
   qemu-test -kvm on ./tests
   qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./tests
-  qemu-test -kernel https://example.com/vmlinuz -kernel.refresh ./tests
+  qemu-test -kernel https://example.com/vmlinuz -refresh ./tests
+  qemu-test -arch arm64 -bundle https://example.com/arm64-boot.tgz -module xhci_pci ./tests
+  qemu-test -bundle ./boot -module xhci_pci ./tests
   qemu-test -append "loglevel=7 quiet" ./tests
   qemu-test -keep -v ./tests
   qemu-test -qemu.device qemu-xhci,id=xhci ./tests

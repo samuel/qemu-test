@@ -97,6 +97,12 @@ func runTests() error {
 		return fmt.Errorf("mount filesystems: %w", err)
 	}
 
+	// Load any requested kernel modules (and their dependencies) before the tests
+	// run; needs /proc, /sys, /dev mounted, so it follows mountfs.
+	if err := loadModules(); err != nil {
+		return fmt.Errorf("load modules: %w", err)
+	}
+
 	var args []string
 	argsRaw, err := os.ReadFile("test-args.txt")
 	if err == nil {
@@ -123,6 +129,11 @@ func runTests() error {
 		fmt.Printf("Running tests with args: %s\n", argsRaw)
 	}
 
+	// Rescan PCI bus just in case the modules changed anything.
+	if err := writeSys("/sys/bus/pci/rescan", []byte("1\n")); err != nil {
+		fmt.Println(err.Error())
+	}
+
 	cmd := exec.Command("/tests", args...)
 	cmd.Stdout = guestStdout
 	cmd.Stderr = guestStderr
@@ -133,4 +144,17 @@ func runTests() error {
 	}
 	// A non-nil error here is a test failure; main reports it as [TESTS:FAIL].
 	return cmd.Run()
+}
+
+func writeSys(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("failed to open %s for write: %v\n", path, err)
+	}
+	_, err = f.Write(data)
+	_ = f.Close()
+	if err != nil {
+		return fmt.Errorf("failed to write to %s: %v\n", path, err)
+	}
+	return nil
 }

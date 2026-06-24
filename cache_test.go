@@ -10,43 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/samuel/qemu-test/internal/bundler"
+	"github.com/samuel/qemu-test/internal/cache"
 )
-
-func TestIsKernelURL(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"http://example.com/vmlinuz", true},
-		{"https://example.com/vmlinuz", true},
-		{"HTTP://example.com/vmlinuz", true}, // scheme is lower-cased by url.Parse
-		{"/abs/path/vmlinuz", false},
-		{"./rel/vmlinuz", false},
-		{"vmlinuz", false},
-		{"", false},
-		{"ftp://example.com/vmlinuz", false},
-		{"file:///vmlinuz", false},
-	}
-	for _, tc := range cases {
-		if got := isKernelURL(tc.in); got != tc.want {
-			t.Errorf("isKernelURL(%q) = %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestCacheKey(t *testing.T) {
-	a := cacheKey("http://example.com/vmlinuz")
-	if a != cacheKey("http://example.com/vmlinuz") {
-		t.Fatal("cacheKey not stable for the same URL")
-	}
-	if a == cacheKey("http://example.com/other") {
-		t.Fatal("cacheKey collided for different URLs")
-	}
-	if len(a) != 64 { // sha256 hex
-		t.Fatalf("cacheKey length = %d, want 64", len(a))
-	}
-}
 
 // fakeKernelServer serves a kernel body with an optional ETag, honors
 // If-None-Match for conditional refresh, and counts the requests it actually
@@ -100,7 +69,7 @@ func TestFetchKernelDownloadsAndCaches(t *testing.T) {
 	defer srv.Close()
 	cacheDir := t.TempDir()
 
-	path, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
+	path, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
 	if err != nil {
 		t.Fatalf("fetchKernel: %v", err)
 	}
@@ -109,7 +78,7 @@ func TestFetchKernelDownloadsAndCaches(t *testing.T) {
 	}
 
 	// Meta sidecar records the validator and a correct content hash.
-	meta, err := loadKernelMeta(path + ".json")
+	meta, err := cache.LoadMeta(path + ".json")
 	if err != nil {
 		t.Fatalf("loadKernelMeta: %v", err)
 	}
@@ -134,14 +103,14 @@ func TestFetchKernelOfflineFirst(t *testing.T) {
 	defer srv.Close()
 	cacheDir := t.TempDir()
 
-	if _, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false); err != nil {
+	if _, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false); err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
 	if fake.hitCount() != 1 {
 		t.Fatalf("first fetch hits = %d, want 1", fake.hitCount())
 	}
 	// A cached kernel without refresh must not contact the network.
-	if _, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false); err != nil {
+	if _, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false); err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
 	if fake.hitCount() != 1 {
@@ -155,12 +124,12 @@ func TestFetchKernelRefreshNotModified(t *testing.T) {
 	defer srv.Close()
 	cacheDir := t.TempDir()
 
-	path, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
+	path, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
 	// Refresh with an unchanged remote: server answers 304 and the cache is kept.
-	path2, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, true)
+	path2, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, true)
 	if err != nil {
 		t.Fatalf("refresh fetch: %v", err)
 	}
@@ -181,19 +150,19 @@ func TestFetchKernelRefreshChanged(t *testing.T) {
 	defer srv.Close()
 	cacheDir := t.TempDir()
 
-	path, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
+	path, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
 	// Remote changes: new body + new ETag. Refresh must re-download.
 	fake.set([]byte("kernel-v2-bigger"), `"v2"`)
-	if _, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, true); err != nil {
+	if _, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, true); err != nil {
 		t.Fatalf("refresh fetch: %v", err)
 	}
 	if got := readFile(t, path); !bytes.Equal(got, []byte("kernel-v2-bigger")) {
 		t.Fatalf("body after refresh = %q, want updated content", got)
 	}
-	meta, err := loadKernelMeta(path + ".json")
+	meta, err := cache.LoadMeta(path + ".json")
 	if err != nil {
 		t.Fatalf("loadKernelMeta: %v", err)
 	}
@@ -207,7 +176,7 @@ func TestFetchKernelOfflineFallback(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	cacheDir := t.TempDir()
 
-	path, err := fetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
+	path, err := cache.FetchKernel(context.Background(), srv.Client(), srv.URL, cacheDir, false)
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
@@ -215,7 +184,7 @@ func TestFetchKernelOfflineFallback(t *testing.T) {
 	srv.Close() // network now unreachable
 
 	// Refresh fails to reach the server, but a cached copy exists: fall back to it.
-	path2, err := fetchKernel(context.Background(), http.DefaultClient, url, cacheDir, true)
+	path2, err := cache.FetchKernel(context.Background(), http.DefaultClient, url, cacheDir, true)
 	if err != nil {
 		t.Fatalf("offline refresh should fall back to cache, got error: %v", err)
 	}
@@ -229,12 +198,12 @@ func TestFetchKernelNoCacheServerDown(t *testing.T) {
 	url := srv.URL
 	srv.Close() // closed before any successful fetch; cache is empty
 
-	if _, err := fetchKernel(context.Background(), http.DefaultClient, url, t.TempDir(), false); err == nil {
+	if _, err := cache.FetchKernel(context.Background(), http.DefaultClient, url, t.TempDir(), false); err == nil {
 		t.Fatal("expected error when no cache exists and the server is unreachable")
 	}
 }
 
-func TestResolveKernelLocalOverride(t *testing.T) {
+func TestResolveBootEnvLocalKernel(t *testing.T) {
 	a, err := lookupArch("amd64")
 	if err != nil {
 		t.Fatal(err)
@@ -243,39 +212,86 @@ func TestResolveKernelLocalOverride(t *testing.T) {
 	if err := os.WriteFile(kf, []byte("kernel"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveKernel(context.Background(), a, kf, false, t.TempDir())
+	env, err := resolveBootEnv(context.Background(), a, runOpts{kernelOverride: kf}, t.TempDir())
 	if err != nil {
-		t.Fatalf("resolveKernel: %v", err)
+		t.Fatalf("resolveBootEnv: %v", err)
 	}
-	if got != kf {
-		t.Fatalf("resolveKernel = %q, want %q", got, kf)
+	if env.kernelPath != kf {
+		t.Fatalf("kernelPath = %q, want %q", env.kernelPath, kf)
+	}
+	if env.modulesDir != "" || env.dtbPath != "" {
+		t.Fatalf("bare -kernel should carry no modules/dtb, got %+v", env)
 	}
 
-	if _, err := resolveKernel(context.Background(), a, filepath.Join(t.TempDir(), "missing"), false, t.TempDir()); err == nil {
+	if _, err := resolveBootEnv(context.Background(), a, runOpts{kernelOverride: filepath.Join(t.TempDir(), "missing")}, t.TempDir()); err == nil {
 		t.Fatal("expected error for a missing -kernel path")
 	}
 }
 
-func TestResolveKernelArchURL(t *testing.T) {
+func TestResolveBootEnvArchKernelURL(t *testing.T) {
 	body := []byte("\x7fELF-arch-default-kernel")
 	srv := httptest.NewServer(&fakeKernelServer{body: body, etag: `"v1"`})
 	defer srv.Close()
-	t.Setenv("QEMU_TEST_KERNEL_CACHE", t.TempDir())
+	t.Setenv("QEMU_TEST_CACHE", t.TempDir())
 
-	// An arch with no embedded kernel falls back to its configured kernelURL.
+	// An arch with no bundle falls back to its configured kernelURL.
 	a := arch{name: "testarch", kernelURL: srv.URL}
-	got, err := resolveKernel(context.Background(), a, "", false, t.TempDir())
+	env, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir())
 	if err != nil {
-		t.Fatalf("resolveKernel: %v", err)
+		t.Fatalf("resolveBootEnv: %v", err)
 	}
-	if data := readFile(t, got); !bytes.Equal(data, body) {
+	if data := readFile(t, env.kernelPath); !bytes.Equal(data, body) {
 		t.Fatalf("fetched kernel = %q, want %q", data, body)
 	}
 }
 
-func TestResolveKernelNoKernel(t *testing.T) {
-	a := arch{name: "bare"} // no embedded kernel, no URL
-	if _, err := resolveKernel(context.Background(), a, "", false, t.TempDir()); err == nil {
-		t.Fatal("expected error when an arch has neither an embedded kernel nor a kernelURL")
+func TestResolveBootEnvNoKernel(t *testing.T) {
+	a := arch{name: "bare"} // no kernel, no bundle, no URL
+	if _, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir()); err == nil {
+		t.Fatal("expected error when an arch has neither a kernel/bundle nor a URL")
+	}
+}
+
+func TestResolveBootEnvBuiltBundle(t *testing.T) {
+	// An arch with a bundleConfig builds a bundle from upstream sources and then
+	// uses it like a downloaded bundle: the kernel and modules tree resolve.
+	var hits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/vmlinuz", func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("KERNEL-IMAGE"))
+	})
+	mux.HandleFunc("/modules.dep", func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("kernel/foo.ko:\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Setenv("QEMU_TEST_CACHE", t.TempDir())
+
+	a := arch{name: "built", bundleConfig: &bundler.Config{Sources: []bundler.Source{
+		{URL: srv.URL + "/vmlinuz", Dst: "vmlinuz"},
+		{URL: srv.URL + "/modules.dep", Dst: "modules/modules.dep"},
+	}}}
+
+	env, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir())
+	if err != nil {
+		t.Fatalf("resolveBootEnv: %v", err)
+	}
+	if data := readFile(t, env.kernelPath); !bytes.Equal(data, []byte("KERNEL-IMAGE")) {
+		t.Fatalf("built bundle kernel = %q, want %q", data, "KERNEL-IMAGE")
+	}
+	if filepath.Base(env.modulesDir) != "modules" {
+		t.Fatalf("built bundle modulesDir = %q, want a 'modules' tree", env.modulesDir)
+	}
+
+	// A second run reuses the cached build (the .tgz is keyed by config) and the
+	// bundler's cached sources, so it makes no further network requests.
+	srcHits := hits.Load()
+	if _, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir()); err != nil {
+		t.Fatalf("resolveBootEnv (reuse): %v", err)
+	}
+	if got := hits.Load(); got != srcHits {
+		t.Fatalf("offline-first: hits = %d after reuse, want %d", got, srcHits)
 	}
 }
