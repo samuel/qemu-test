@@ -250,11 +250,67 @@ type runOpts struct {
 	extraCmdline   []string // extra kernel cmdline tokens (-append), merged after console=
 }
 
+// firmwareDirs returns candidate directories to search for a qemu firmware blob,
+// given the resolved qemu binary path. The first entry derives the install's data
+// dir from the binary (<prefix>/bin/qemu-system-X -> <prefix>/share/qemu), which
+// covers both Homebrew (/opt/homebrew/...) and a system install (/usr/...); the
+// rest are common fixed locations as a fallback.
+func firmwareDirs(qemuBinaryPath string) []string {
+	var dirs []string
+	if qemuBinaryPath != "" {
+		dirs = append(dirs, filepath.Join(filepath.Dir(qemuBinaryPath), "..", "share", "qemu"))
+	}
+	return append(dirs,
+		"/usr/share/qemu",
+		"/usr/share/edk2/loongarch64",
+		"/usr/share/qemu-efi-loongarch64",
+		"/opt/homebrew/share/qemu",
+	)
+}
+
+// findFirmwareIn returns the first existing regular file <dir>/<name>.
+func findFirmwareIn(dirs []string, name string) (string, bool) {
+	for _, d := range dirs {
+		p := filepath.Join(d, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// findFirmware locates the named qemu firmware blob (e.g. an edk2 image) for the
+// given qemu binary, searching next to the binary and in common system dirs.
+func findFirmware(qemuBinary, name string) (string, error) {
+	bin, err := exec.LookPath(qemuBinary)
+	if err == nil {
+		if resolved, e := filepath.EvalSymlinks(bin); e == nil {
+			bin = resolved
+		}
+	}
+	dirs := firmwareDirs(bin)
+	if p, ok := findFirmwareIn(dirs, name); ok {
+		return p, nil
+	}
+	return "", fmt.Errorf("firmware %q not found in %v; install it or pass it with -qemu.arg \"-bios /path/to/%s\"", name, dirs, name)
+}
+
 func run(ctx context.Context, o runOpts) error {
 	a := o.arch
 	// Fail fast (before the expensive build) if the arch's emulator is missing.
 	if _, err := exec.LookPath(a.qemuBinary); err != nil {
 		return fmt.Errorf("qemu binary %q not found for arch %s (install it via your package manager): %w", a.qemuBinary, a.name, err)
+	}
+
+	// Some arches (loong64) need a firmware blob passed via -bios so the guest gets
+	// ACPI tables. Locate it now (also fail fast), unless the user supplied their own
+	// -bios via -qemu.arg.
+	var firmwarePath string
+	if a.firmware != "" && !slices.Contains(o.qemuArgs, "-bios") {
+		var err error
+		if firmwarePath, err = findFirmware(a.qemuBinary, a.firmware); err != nil {
+			return err
+		}
 	}
 
 	tempPath, err := os.MkdirTemp("", "qemu-test-")
@@ -316,6 +372,7 @@ func run(ctx context.Context, o runOpts) error {
 	qemuArgs := append(o.qemuArgs, a.bootArgs(bootConfig{
 		kernelPath:   env.kernelPath,
 		dtbPath:      env.dtbPath,
+		firmwarePath: firmwarePath,
 		initrdPath:   ifs.Name(),
 		qmpSock:      qmpSock,
 		kvm:          o.kvm,

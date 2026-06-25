@@ -43,6 +43,7 @@ downloaded and cached on first run — see [Fetching kernels from a URL](#fetchi
 qemu-test -arch riscv64 ./guesttests                          # uses the default Debian bundle
 qemu-test -arch riscv64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on riscv64
 qemu-test -arch 386 ./guesttests                              # 32-bit x86 on the amd64 kernel (IA32 emulation)
+qemu-test -arch loong64 ./guesttests                          # LoongArch; edk2 firmware auto-located for -bios
 qemu-test -arch arm64 -kernel ./Image ./guesttests            # override with a local image
 qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
 ```
@@ -62,6 +63,14 @@ qemu's riscv64 `-kernel` loader does not decompress) plus the module set out of 
 That initrd is the *installer's* reduced module set: it ships USB but no 9p module, so `-out`
 (virtio-9p) is unavailable on `riscv64`/`arm`; the guest mounts `/out` best-effort, so runs
 continue regardless.
+
+`loong64` (LoongArch, little-endian) is a newer ISA supported by Go and Debian. Its bundle is one
+debian-ports `linux-image-loong64` `.deb` (kernel + full module set). The catch: a direct `-kernel`
+boot gives the guest no ACPI tables, and the built-in i8042 driver then faults at boot — so loong64
+boots through **edk2 firmware** (which supplies ACPI). The tool locates the firmware blob
+(`edk2-loongarch64-code.fd`, shipped with qemu) next to the qemu binary and in common system dirs,
+and passes it via `-bios` automatically, so `-arch loong64` still boots with no flags; pass your own
+with `-qemu.arg "-bios <path>"` to override. USB and `-out` work on the virt machine's PCI bus.
 
 #### Big-endian testing
 

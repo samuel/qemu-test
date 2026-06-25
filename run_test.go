@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -41,6 +43,41 @@ func TestTailSuffix(t *testing.T) {
 	want := "; last console output:\nline one\nline two"
 	if got != want {
 		t.Errorf("tailSuffix = %q, want %q", got, want)
+	}
+}
+
+func TestFirmwareDirs(t *testing.T) {
+	// The first candidate is derived from the binary: <prefix>/bin/X -> <prefix>/share/qemu.
+	got := firmwareDirs("/opt/homebrew/bin/qemu-system-loongarch64")
+	if len(got) == 0 || got[0] != "/opt/homebrew/share/qemu" {
+		t.Errorf("firmwareDirs[0] = %q, want /opt/homebrew/share/qemu", got[0])
+	}
+	if d := firmwareDirs("/usr/bin/qemu-system-loongarch64"); d[0] != "/usr/share/qemu" {
+		t.Errorf("firmwareDirs[0] = %q, want /usr/share/qemu", d[0])
+	}
+	// An empty binary path contributes no derived dir, only the fixed fallbacks.
+	if d := firmwareDirs(""); len(d) == 0 || d[0] == "" || strings.HasPrefix(d[0], "..") {
+		t.Errorf("firmwareDirs(\"\") = %v, want only fixed dirs", d)
+	}
+}
+
+func TestFindFirmwareIn(t *testing.T) {
+	dir := t.TempDir()
+	const name = "edk2-loongarch64-code.fd"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("fw"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A directory named like the firmware must not be mistaken for the file.
+	missesDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(missesDir, name), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if p, ok := findFirmwareIn([]string{missesDir, dir}, name); !ok || p != filepath.Join(dir, name) {
+		t.Errorf("findFirmwareIn = %q, %v; want the real file in %q", p, ok, dir)
+	}
+	if _, ok := findFirmwareIn([]string{missesDir, t.TempDir()}, name); ok {
+		t.Error("findFirmwareIn matched a directory or missing file")
 	}
 }
 

@@ -20,6 +20,7 @@ type arch struct {
 	cpu        string   // -cpu value under TCG; "" omits it (amd64's default boots)
 	console    string   // kernel console= device, e.g. "ttyS0" (amd64), "ttyAMA0" (arm64)
 	kernelURL  string   // default bare-kernel URL, downloaded and cached when there's no embedded kernel; "" = require -kernel/-bundle
+	firmware   string   // edk2 firmware blob filename to locate and pass via -bios; "" = none (loong64 needs it for ACPI)
 	cmdline    []string // extra kernel -append tokens (e.g. "earlycon"), merged after console=
 	extraArgs  []string // extra qemu argv, appended verbatim, if an arch ever needs them
 
@@ -200,6 +201,44 @@ var arches = map[string]arch{
 			},
 		},
 	},
+	// loong64 (LoongArch 64-bit, little-endian) is a newer ISA that Go and Debian both
+	// support. Debian builds the loong64 kernel as a PE32+ EFI-stub image
+	// (/boot/vmlinuz-*), but qemu-system-loongarch64's virt-machine -kernel loader boots
+	// it directly — it sets up a minimal EFI environment itself, so no edk2/-bios
+	// firmware is needed (unlike a full UEFI boot). loong64 is not a Debian release arch,
+	// so the bundle comes from debian-ports: one linux-image .deb carrying both the kernel
+	// and the full module set (.ko.xz, no modules.dep -> resolved via .modinfo and
+	// decompressed in-guest), resolved from the Packages index (linux-image-loong64
+	// meta-package -> current ABI; no signed/unsigned split) rather than version-pinned.
+	"loong64": {
+		name:       "loong64",
+		goarch:     "loong64",
+		qemuBinary: "qemu-system-loongarch64",
+		machine:    "virt",
+		cpu:        "max",
+		console:    "ttyS0",                    // 16550 UART on the virt machine
+		firmware:   "edk2-loongarch64-code.fd", // edk2 supplies ACPI tables; without it the i8042 driver faults at boot
+		bundleConfig: &bundler.Config{
+			Sources: []bundler.Source{
+				{
+					Debian: &bundler.DebianRef{
+						Mirror:    "https://deb.debian.org/debian-ports",
+						Suite:     "unstable",
+						Component: "main",
+						Arch:      "loong64",
+						Via:       "linux-image-loong64",
+						AbiDep:    "linux-image-{abi}-loong64",
+						Package:   "linux-image-{abi}-loong64",
+					},
+					Archive: true,
+					Files: map[string]string{
+						"boot/vmlinuz-*":         "vmlinuz",
+						"usr/lib/modules/*/./**": "modules/",
+					},
+				},
+			},
+		},
+	},
 	// s390x (IBM Z) is big-endian: cross-compiling the test binary for it runs the
 	// code big-endian, so it catches byte-order bugs. Its default virtio devices sit
 	// on the CCW bus, but the s390-ccw-virtio machine also supports PCI via IBM Z's
@@ -360,6 +399,7 @@ func lookupArch(name string) (arch, error) {
 type bootConfig struct {
 	kernelPath   string
 	dtbPath      string // device tree to pass via -dtb; "" omits it (most machines auto-generate one)
+	firmwarePath string // firmware blob to pass via -bios; "" omits it (only loong64 needs one)
 	initrdPath   string
 	qmpSock      string
 	kvm          bool     // append -enable-kvm and use -cpu host (native virtualization)
@@ -375,6 +415,9 @@ func (a arch) bootArgs(c bootConfig) []string {
 	args := []string{"-kernel", c.kernelPath}
 	if c.dtbPath != "" {
 		args = append(args, "-dtb", c.dtbPath)
+	}
+	if c.firmwarePath != "" {
+		args = append(args, "-bios", c.firmwarePath)
 	}
 	if a.machine != "" {
 		args = append(args, "-machine", a.machine)
