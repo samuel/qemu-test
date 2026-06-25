@@ -153,6 +153,13 @@ func main() {
 		modules = append(modules, "9p", "9pnet_virtio")
 	}
 
+	// bootArgs always attaches a virtio-rng device; load its driver so the guest
+	// entropy pool is actually fed (crypto/rand's getrandom can block early in boot
+	// before the CRNG is seeded). The Debian bundles build virtio_rng as a module;
+	// the resolver skips it where it is built in or the module is absent (e.g. a
+	// bare -kernel), so this is a harmless no-op there.
+	modules = append(modules, "virtio_rng")
+
 	var testBuildArgs []string
 	if *flagTags != "" {
 		testBuildArgs = append(testBuildArgs, "-tags", *flagTags)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 )
@@ -98,6 +99,12 @@ func runTests() error {
 		return fmt.Errorf("mount filesystems: %w", err)
 	}
 
+	// Bring up the loopback interface so tests can use 127.0.0.1 / ::1 (httptest,
+	// net.Listen on localhost, ...); lo is administratively down at boot. Best-
+	// effort: it logs and continues, so a test that does no localhost networking is
+	// unaffected if this somehow doesn't take.
+	setupLoopback()
+
 	// Load any requested kernel modules (and their dependencies) before the tests
 	// run; needs /proc, /sys, /dev mounted, so it follows mountfs.
 	if err := loadModules(); err != nil {
@@ -145,13 +152,32 @@ func runTests() error {
 	cmd := exec.Command("/tests", args...)
 	cmd.Stdout = guestStdout
 	cmd.Stderr = guestStderr
-	if len(env) != 0 {
-		// Append the user vars to the inherited environment so the test keeps a
-		// baseline env; later entries win, so user vars override duplicates.
-		cmd.Env = append(os.Environ(), env...)
+	cmd.Env = testEnvironment(env)
+	// runReaped runs /tests to completion and, as PID 1, reaps any orphaned
+	// grandchildren reparented to init. A non-nil error is a test failure; main
+	// reports it as [TESTS:FAIL].
+	return runReaped(cmd)
+}
+
+// testEnvironment builds the environment for the /tests binary. PID 1 inherits a
+// near-empty environment (essentially just what the kernel passed on the
+// cmdline), so it fills in sane defaults for PATH/HOME/TMPDIR when they are
+// absent — without them tests that exec helpers (via $PATH), read $HOME, or honor
+// $TMPDIR misbehave. The user's -env vars are appended last so they win (exec
+// resolves a duplicate key to its last value).
+func testEnvironment(user []string) []string {
+	env := os.Environ()
+	for _, def := range []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME=/root",
+		"TMPDIR=/tmp",
+	} {
+		key := def[:strings.IndexByte(def, '=')+1]
+		if !slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, key) }) {
+			env = append(env, def)
+		}
 	}
-	// A non-nil error here is a test failure; main reports it as [TESTS:FAIL].
-	return cmd.Run()
+	return append(env, user...)
 }
 
 func writeSys(path string, data []byte) error {

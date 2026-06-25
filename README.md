@@ -81,9 +81,6 @@ little-endian host can't.
 ```sh
 qemu-test -arch s390x ./guesttests                       # default Debian linux-image bundle; SCLP console, CCW bus
 qemu-test -arch s390x -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on s390x via zPCI
-qemu-test -arch ppc64 ./guesttests                       # default bundle built from debian-ports .debs
-qemu-test -arch ppc64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on a big-endian guest
-qemu-test -arch ppc64le ./guesttests                     # little-endian POWER; trixie release bundle
 ```
 
 `s390x` ships a default `bundleConfig` built from the Debian trixie `linux-image-s390x` `.deb`
@@ -384,9 +381,10 @@ qemu-test [flags] <package> [test args...]
 ### Environment variables
 
 `-env KEY=VALUE` sets variables in the test binary's environment inside the guest. The flag is
-repeatable; later values override earlier ones for the same key. The values are appended to the
-guest's baseline environment, so the test still sees a normal `PATH` etc. A value with no `=`
-is rejected with a usage error.
+repeatable; later values override earlier ones for the same key. PID 1 inherits a near-empty
+environment, so the guest fills in baseline defaults (`PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+`HOME=/root`, `TMPDIR=/tmp`) for any not already set; your `-env` values are appended last, so they
+win over the defaults. A value with no `=` is rejected with a usage error.
 
 ```sh
 qemu-test -env DB_URL=memory:// -env DEBUG=1 ./mypkg
@@ -457,10 +455,14 @@ qemu-test -append "loglevel=7" ./mypkg
    and any requested kernel modules with `test-modules.txt` (their dependency-ordered load list)
    — into a deterministic newc-cpio initramfs.
 3. **Boot** the architecture's qemu binary (default `qemu-system-x86_64`) with the kernel,
-   serial on stdio, display off, and a QMP control socket.
-4. **Run**: `init` mounts `/proc`, `/sys`, `/dev`, etc. (and `/out` if shared), loads any
-   requested kernel modules, sets the env, runs the test binary as its child, prints the result,
-   and always powers the VM off.
+   serial on stdio, display off, a QMP control socket, a virtio-rng device (so the guest entropy
+   pool is seeded and `crypto/rand` doesn't stall at boot), and `-no-reboot` + `panic=-1` (so a
+   kernel panic exits qemu immediately with the console tail rather than hanging until `-timeout`).
+4. **Run**: `init` mounts `/proc`, `/sys`, `/dev`, etc., brings up the loopback interface (so tests
+   can use `127.0.0.1`/`::1`), loads any requested kernel modules, mounts `/out` if shared, fills in
+   default env vars (`PATH`/`HOME`/`TMPDIR`) plus any `-env` values, then runs the test binary as
+   its child — reaping it and any orphaned grandchildren as PID 1 — prints the result, and always
+   powers the VM off.
 5. **Report**: the host parses the serial console for a verdict and exits accordingly.
 
 The guest and host communicate over a small line protocol on the serial console:

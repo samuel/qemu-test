@@ -9,7 +9,7 @@ import (
 
 func mountfs() error {
 	_ = os.MkdirAll("/tmp", 0777)
-	for _, p := range []string{"/proc", "/sys", "/dev", "/dev/pts", "/dev/shm", "/run", "/perm", "/perm/var/run", "/sys/fs/cgroup"} {
+	for _, p := range []string{"/root", "/proc", "/sys", "/dev", "/dev/pts", "/dev/shm", "/run", "/perm", "/perm/var/run", "/sys/fs/cgroup"} {
 		_ = os.MkdirAll(p, 0755)
 	}
 

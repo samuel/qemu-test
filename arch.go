@@ -19,6 +19,7 @@ type arch struct {
 	machine    string   // -machine value; "" omits it (amd64 uses the implicit "pc")
 	cpu        string   // -cpu value under TCG; "" omits it (amd64's default boots)
 	console    string   // kernel console= device, e.g. "ttyS0" (amd64), "ttyAMA0" (arm64)
+	rngDevice  string   // virtio-rng qemu device; "" defaults to "virtio-rng-pci" (s390x overrides with the CCW variant)
 	kernelURL  string   // default bare-kernel URL, downloaded and cached when there's no embedded kernel; "" = require -kernel/-bundle
 	firmware   string   // edk2 firmware blob filename to locate and pass via -bios; "" = none (loong64 needs it for ACPI)
 	cmdline    []string // extra kernel -append tokens (e.g. "earlycon"), merged after console=
@@ -258,8 +259,9 @@ var arches = map[string]arch{
 		goarch:     "s390x",
 		qemuBinary: "qemu-system-s390x",
 		machine:    "s390-ccw-virtio",
-		cpu:        "max",      // all TCG-emulable facilities; kvm branch substitutes "host"
-		console:    "ttysclp0", // SCLP line console; qemu maps it to -serial stdio.
+		cpu:        "max",            // all TCG-emulable facilities; kvm branch substitutes "host"
+		console:    "ttysclp0",       // SCLP line console; qemu maps it to -serial stdio.
+		rngDevice:  "virtio-rng-ccw", // CCW bus; avoids the zPCI auto-wrap a -pci device would trigger
 		bundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
@@ -436,12 +438,27 @@ func (a arch) bootArgs(c bootConfig) []string {
 	case a.cpu != "":
 		args = append(args, "-cpu", a.cpu)
 	}
+	rngDevice := a.rngDevice
+	if rngDevice == "" {
+		rngDevice = "virtio-rng-pci"
+	}
 	args = append(args,
 		"-serial", "stdio",
 		"-display", "none",
+		// Exit (rather than reset) on a guest-initiated reboot, so the panic=-1
+		// below turns a kernel panic into an immediate qemu exit — the host then
+		// reports the captured console tail instead of waiting out the -timeout.
+		// The normal shutdown path powers off, which already exits qemu regardless.
+		"-no-reboot",
+		// Feed the guest entropy pool (the guest loads virtio_rng): crypto/rand uses
+		// blocking getrandom, which can stall early in boot before the CRNG is seeded.
+		"-device", rngDevice,
 		"-qmp", "unix:"+c.qmpSock+",server=on,wait=off")
 	args = append(args, a.extraArgs...)
-	cmdline := append([]string{"console=" + a.console}, a.cmdline...)
+	// panic=-1 reboots immediately on a kernel panic; paired with -no-reboot that
+	// makes qemu exit at once (a fast, diagnosable failure) instead of hanging until
+	// the host -timeout. Placed before the user's -append tokens so -append wins.
+	cmdline := append([]string{"console=" + a.console, "panic=-1"}, a.cmdline...)
 	cmdline = append(cmdline, c.extraCmdline...)
 	args = append(args, "-append", strings.Join(cmdline, " "), "-initrd", c.initrdPath)
 	return args

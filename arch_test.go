@@ -26,9 +26,9 @@ func TestLookupArch(t *testing.T) {
 }
 
 func TestBootArgsAmd64ByteIdentity(t *testing.T) {
-	// Guards that the arch abstraction did not change the shipping arch's qemu
-	// command: amd64 must emit no -machine/-cpu and console=ttyS0, exactly as the
-	// tool did before the registry existed.
+	// Guards the shipping arch's qemu command: amd64 emits no -machine/-cpu and a
+	// console=ttyS0 cmdline, plus the tool's standard -no-reboot, virtio-rng device,
+	// and panic=-1 (so a panic exits qemu rather than hanging).
 	a, err := lookupArch("amd64")
 	if err != nil {
 		t.Fatal(err)
@@ -38,8 +38,10 @@ func TestBootArgsAmd64ByteIdentity(t *testing.T) {
 		"-kernel", "/tmp/k",
 		"-serial", "stdio",
 		"-display", "none",
+		"-no-reboot",
+		"-device", "virtio-rng-pci",
 		"-qmp", "unix:/tmp/qmp.sock,server=on,wait=off",
-		"-append", "console=ttyS0",
+		"-append", "console=ttyS0 panic=-1",
 		"-initrd", "/tmp/initramfs.gz",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -60,8 +62,10 @@ func TestBootArgsKVM(t *testing.T) {
 		"-cpu", "host",
 		"-serial", "stdio",
 		"-display", "none",
+		"-no-reboot",
+		"-device", "virtio-rng-pci",
 		"-qmp", "unix:/tmp/q,server=on,wait=off",
-		"-append", "console=ttyS0",
+		"-append", "console=ttyS0 panic=-1",
 		"-initrd", "/tmp/i",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -84,7 +88,7 @@ func TestBootArgsExtraCmdline(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/i", qmpSock: "/tmp/q", extraCmdline: []string{"loglevel=7", "quiet"}})
-	want := "console=ttyS0 loglevel=7 quiet"
+	want := "console=ttyS0 panic=-1 loglevel=7 quiet"
 	for i, v := range got {
 		if v == "-append" && i+1 < len(got) {
 			if got[i+1] != want {
@@ -115,8 +119,10 @@ func TestBootArgsDataDriven(t *testing.T) {
 		"-cpu", "max",
 		"-serial", "stdio",
 		"-display", "none",
+		"-no-reboot",
+		"-device", "virtio-rng-pci",
 		"-qmp", "unix:/tmp/qmp.sock,server=on,wait=off",
-		"-append", "console=ttyAMA0 earlycon",
+		"-append", "console=ttyAMA0 panic=-1 earlycon",
 		"-initrd", "/tmp/initramfs.gz",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -136,8 +142,10 @@ func TestBootArgsDTB(t *testing.T) {
 		"-dtb", "/tmp/board.dtb",
 		"-serial", "stdio",
 		"-display", "none",
+		"-no-reboot",
+		"-device", "virtio-rng-pci",
 		"-qmp", "unix:/tmp/q,server=on,wait=off",
-		"-append", "console=ttyS0",
+		"-append", "console=ttyS0 panic=-1",
 		"-initrd", "/tmp/i",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -155,9 +163,10 @@ func TestBootArgsBigEndian(t *testing.T) {
 		name        string
 		wantMachine string
 		wantConsole string
+		wantRng     string // s390x uses the CCW rng variant; the PCI arches the default
 	}{
-		{"s390x", "s390-ccw-virtio", "ttysclp0"},
-		{"ppc64", "pseries", "hvc0"},
+		{"s390x", "s390-ccw-virtio", "ttysclp0", "virtio-rng-ccw"},
+		{"ppc64", "pseries", "hvc0", "virtio-rng-pci"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,8 +181,10 @@ func TestBootArgsBigEndian(t *testing.T) {
 				"-cpu", "max",
 				"-serial", "stdio",
 				"-display", "none",
+				"-no-reboot",
+				"-device", tt.wantRng,
 				"-qmp", "unix:/tmp/q,server=on,wait=off",
-				"-append", "console=" + tt.wantConsole,
+				"-append", "console=" + tt.wantConsole + " panic=-1",
 				"-initrd", "/tmp/i",
 			}
 			if !reflect.DeepEqual(got, want) {
