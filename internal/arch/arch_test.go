@@ -1,4 +1,4 @@
-package main
+package arch
 
 import (
 	"reflect"
@@ -8,20 +8,20 @@ import (
 )
 
 func TestLookupArch(t *testing.T) {
-	a, err := lookupArch("amd64")
+	a, err := Lookup("amd64")
 	if err != nil {
-		t.Fatalf("lookupArch(amd64) error: %v", err)
+		t.Fatalf("Lookup(amd64) error: %v", err)
 	}
-	if a.goarch != "amd64" || a.qemuBinary != "qemu-system-x86_64" {
-		t.Fatalf("lookupArch(amd64) = %+v, unexpected goarch/qemuBinary", a)
+	if a.GOARCH != "amd64" || a.QEMUBinary != "qemu-system-x86_64" {
+		t.Fatalf("Lookup(amd64) = %+v, unexpected GOARCH/QEMUBinary", a)
 	}
 
-	_, err = lookupArch("bogus")
+	_, err = Lookup("bogus")
 	if err == nil {
-		t.Fatal("lookupArch(bogus) = nil error, want error")
+		t.Fatal("Lookup(bogus) = nil error, want error")
 	}
 	if !strings.Contains(err.Error(), "amd64") {
-		t.Fatalf("lookupArch(bogus) error %q should list available arches", err)
+		t.Fatalf("Lookup(bogus) error %q should list available arches", err)
 	}
 }
 
@@ -29,11 +29,11 @@ func TestBootArgsAmd64ByteIdentity(t *testing.T) {
 	// Guards the shipping arch's qemu command: amd64 emits no -machine/-cpu and a
 	// console=ttyS0 cmdline, plus the tool's standard -no-reboot, virtio-rng device,
 	// and panic=-1 (so a panic exits qemu rather than hanging).
-	a, err := lookupArch("amd64")
+	a, err := Lookup("amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/initramfs.gz", qmpSock: "/tmp/qmp.sock"})
+	got := a.BootArgs(BootConfig{KernelPath: "/tmp/k", InitrdPath: "/tmp/initramfs.gz", QMPSock: "/tmp/qmp.sock"})
 	want := []string{
 		"-kernel", "/tmp/k",
 		"-serial", "stdio",
@@ -45,17 +45,17 @@ func TestBootArgsAmd64ByteIdentity(t *testing.T) {
 		"-initrd", "/tmp/initramfs.gz",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("amd64 bootArgs =\n%q\nwant\n%q", got, want)
+		t.Fatalf("amd64 BootArgs =\n%q\nwant\n%q", got, want)
 	}
 }
 
 func TestBootArgsKVM(t *testing.T) {
-	a, err := lookupArch("amd64")
+	a, err := Lookup("amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// KVM enabled: -enable-kvm appears and (no user -cpu) the tool selects -cpu host.
-	got := a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/i", qmpSock: "/tmp/q", kvm: true})
+	got := a.BootArgs(BootConfig{KernelPath: "/tmp/k", InitrdPath: "/tmp/i", QMPSock: "/tmp/q", KVM: true})
 	want := []string{
 		"-kernel", "/tmp/k",
 		"-enable-kvm",
@@ -69,13 +69,13 @@ func TestBootArgsKVM(t *testing.T) {
 		"-initrd", "/tmp/i",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("kvm bootArgs =\n%q\nwant\n%q", got, want)
+		t.Fatalf("kvm BootArgs =\n%q\nwant\n%q", got, want)
 	}
 
 	// A user-supplied -cpu suppresses the tool's -cpu host but keeps -enable-kvm.
-	got = a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/i", qmpSock: "/tmp/q", kvm: true, userSetCPU: true})
+	got = a.BootArgs(BootConfig{KernelPath: "/tmp/k", InitrdPath: "/tmp/i", QMPSock: "/tmp/q", KVM: true, UserSetCPU: true})
 	if slices.Contains(got, "-cpu") {
-		t.Fatalf("kvm+userSetCPU should not emit the tool's -cpu, got %q", got)
+		t.Fatalf("kvm+UserSetCPU should not emit the tool's -cpu, got %q", got)
 	}
 	if !slices.Contains(got, "-enable-kvm") {
 		t.Fatalf("kvm should still emit -enable-kvm, got %q", got)
@@ -83,11 +83,11 @@ func TestBootArgsKVM(t *testing.T) {
 }
 
 func TestBootArgsExtraCmdline(t *testing.T) {
-	a, err := lookupArch("amd64")
+	a, err := Lookup("amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/i", qmpSock: "/tmp/q", extraCmdline: []string{"loglevel=7", "quiet"}})
+	got := a.BootArgs(BootConfig{KernelPath: "/tmp/k", InitrdPath: "/tmp/i", QMPSock: "/tmp/q", ExtraCmdline: []string{"loglevel=7", "quiet"}})
 	want := "console=ttyS0 panic=-1 loglevel=7 quiet"
 	for i, v := range got {
 		if v == "-append" && i+1 < len(got) {
@@ -103,16 +103,16 @@ func TestBootArgsExtraCmdline(t *testing.T) {
 func TestBootArgsDataDriven(t *testing.T) {
 	// A non-amd64 entry is pure data: machine/cpu/console and extra cmdline tokens
 	// must surface in the right places with no code changes.
-	a := arch{
-		name:       "arm64",
-		goarch:     "arm64",
-		qemuBinary: "qemu-system-aarch64",
-		machine:    "virt",
-		cpu:        "max",
-		console:    "ttyAMA0",
-		cmdline:    []string{"earlycon"},
+	a := Arch{
+		Name:       "arm64",
+		GOARCH:     "arm64",
+		QEMUBinary: "qemu-system-aarch64",
+		Machine:    "virt",
+		CPU:        "max",
+		Console:    "ttyAMA0",
+		Cmdline:    []string{"earlycon"},
 	}
-	got := a.bootArgs(bootConfig{kernelPath: "/tmp/Image", initrdPath: "/tmp/initramfs.gz", qmpSock: "/tmp/qmp.sock"})
+	got := a.BootArgs(BootConfig{KernelPath: "/tmp/Image", InitrdPath: "/tmp/initramfs.gz", QMPSock: "/tmp/qmp.sock"})
 	want := []string{
 		"-kernel", "/tmp/Image",
 		"-machine", "virt",
@@ -126,17 +126,17 @@ func TestBootArgsDataDriven(t *testing.T) {
 		"-initrd", "/tmp/initramfs.gz",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("arm64 bootArgs =\n%q\nwant\n%q", got, want)
+		t.Fatalf("arm64 BootArgs =\n%q\nwant\n%q", got, want)
 	}
 }
 
 func TestBootArgsDTB(t *testing.T) {
-	a, err := lookupArch("amd64")
+	a, err := Lookup("amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// With a dtbPath set, -dtb is emitted right after -kernel.
-	got := a.bootArgs(bootConfig{kernelPath: "/tmp/k", dtbPath: "/tmp/board.dtb", initrdPath: "/tmp/i", qmpSock: "/tmp/q"})
+	// With a DTBPath set, -dtb is emitted right after -kernel.
+	got := a.BootArgs(BootConfig{KernelPath: "/tmp/k", DTBPath: "/tmp/board.dtb", InitrdPath: "/tmp/i", QMPSock: "/tmp/q"})
 	want := []string{
 		"-kernel", "/tmp/k",
 		"-dtb", "/tmp/board.dtb",
@@ -149,11 +149,11 @@ func TestBootArgsDTB(t *testing.T) {
 		"-initrd", "/tmp/i",
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("dtb bootArgs =\n%q\nwant\n%q", got, want)
+		t.Fatalf("dtb BootArgs =\n%q\nwant\n%q", got, want)
 	}
-	// With no dtbPath, no -dtb appears (amd64 byte-identity is covered separately).
-	if slices.Contains(a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/i", qmpSock: "/tmp/q"}), "-dtb") {
-		t.Fatal("no dtbPath should emit no -dtb")
+	// With no DTBPath, no -dtb appears (amd64 byte-identity is covered separately).
+	if slices.Contains(a.BootArgs(BootConfig{KernelPath: "/tmp/k", InitrdPath: "/tmp/i", QMPSock: "/tmp/q"}), "-dtb") {
+		t.Fatal("no DTBPath should emit no -dtb")
 	}
 }
 
@@ -170,11 +170,11 @@ func TestBootArgsBigEndian(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, err := lookupArch(tt.name)
+			a, err := Lookup(tt.name)
 			if err != nil {
-				t.Fatalf("lookupArch(%s): %v", tt.name, err)
+				t.Fatalf("Lookup(%s): %v", tt.name, err)
 			}
-			got := a.bootArgs(bootConfig{kernelPath: "/tmp/k", initrdPath: "/tmp/i", qmpSock: "/tmp/q"})
+			got := a.BootArgs(BootConfig{KernelPath: "/tmp/k", InitrdPath: "/tmp/i", QMPSock: "/tmp/q"})
 			want := []string{
 				"-kernel", "/tmp/k",
 				"-machine", tt.wantMachine,
@@ -188,7 +188,7 @@ func TestBootArgsBigEndian(t *testing.T) {
 				"-initrd", "/tmp/i",
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("%s bootArgs =\n%q\nwant\n%q", tt.name, got, want)
+				t.Fatalf("%s BootArgs =\n%q\nwant\n%q", tt.name, got, want)
 			}
 		})
 	}

@@ -1,4 +1,4 @@
-package main
+package runner
 
 import (
 	"os"
@@ -9,14 +9,14 @@ import (
 )
 
 func TestResolveKVM(t *testing.T) {
-	if got, err := resolveKVM("off", runtime.GOARCH); err != nil || got {
-		t.Errorf("resolveKVM(off) = %v, %v; want false, nil", got, err)
+	if got, err := ResolveKVM("off", runtime.GOARCH); err != nil || got {
+		t.Errorf("ResolveKVM(off) = %v, %v; want false, nil", got, err)
 	}
-	if got, err := resolveKVM("on", runtime.GOARCH); err != nil || !got {
-		t.Errorf("resolveKVM(on) = %v, %v; want true, nil", got, err)
+	if got, err := ResolveKVM("on", runtime.GOARCH); err != nil || !got {
+		t.Errorf("ResolveKVM(on) = %v, %v; want true, nil", got, err)
 	}
-	if _, err := resolveKVM("bogus", runtime.GOARCH); err == nil {
-		t.Error("resolveKVM(bogus) = nil error, want error")
+	if _, err := ResolveKVM("bogus", runtime.GOARCH); err == nil {
+		t.Error("ResolveKVM(bogus) = nil error, want error")
 	}
 
 	// auto on a guest arch that cannot match the host never enables (no KVM for
@@ -25,13 +25,13 @@ func TestResolveKVM(t *testing.T) {
 	if runtime.GOARCH == "arm64" {
 		otherArch = "amd64"
 	}
-	if got, err := resolveKVM("auto", otherArch); err != nil || got {
-		t.Errorf("resolveKVM(auto, cross-arch %q) = %v, %v; want false, nil", otherArch, got, err)
+	if got, err := ResolveKVM("auto", otherArch); err != nil || got {
+		t.Errorf("ResolveKVM(auto, cross-arch %q) = %v, %v; want false, nil", otherArch, got, err)
 	}
 
 	// auto on the host arch must not error (result depends on /dev/kvm presence).
-	if _, err := resolveKVM("auto", runtime.GOARCH); err != nil {
-		t.Errorf("resolveKVM(auto, host arch) error: %v", err)
+	if _, err := ResolveKVM("auto", runtime.GOARCH); err != nil {
+		t.Errorf("ResolveKVM(auto, host arch) error: %v", err)
 	}
 }
 

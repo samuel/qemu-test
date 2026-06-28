@@ -1,4 +1,4 @@
-package main
+package boot
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/samuel/qemu-test/internal/arch"
 	"github.com/samuel/qemu-test/internal/bundler"
 	"github.com/samuel/qemu-test/internal/cache"
 )
@@ -204,7 +205,7 @@ func TestFetchKernelNoCacheServerDown(t *testing.T) {
 }
 
 func TestResolveBootEnvLocalKernel(t *testing.T) {
-	a, err := lookupArch("amd64")
+	a, err := arch.Lookup("amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,18 +213,18 @@ func TestResolveBootEnvLocalKernel(t *testing.T) {
 	if err := os.WriteFile(kf, []byte("kernel"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := resolveBootEnv(context.Background(), a, runOpts{kernelOverride: kf}, t.TempDir())
+	env, err := Resolve(context.Background(), Options{Arch: a, KernelOverride: kf, WorkDir: t.TempDir()})
 	if err != nil {
-		t.Fatalf("resolveBootEnv: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
-	if env.kernelPath != kf {
-		t.Fatalf("kernelPath = %q, want %q", env.kernelPath, kf)
+	if env.KernelPath != kf {
+		t.Fatalf("KernelPath = %q, want %q", env.KernelPath, kf)
 	}
-	if env.modulesDir != "" || env.dtbPath != "" {
+	if env.ModulesDir != "" || env.DTBPath != "" {
 		t.Fatalf("bare -kernel should carry no modules/dtb, got %+v", env)
 	}
 
-	if _, err := resolveBootEnv(context.Background(), a, runOpts{kernelOverride: filepath.Join(t.TempDir(), "missing")}, t.TempDir()); err == nil {
+	if _, err := Resolve(context.Background(), Options{Arch: a, KernelOverride: filepath.Join(t.TempDir(), "missing"), WorkDir: t.TempDir()}); err == nil {
 		t.Fatal("expected error for a missing -kernel path")
 	}
 }
@@ -234,26 +235,26 @@ func TestResolveBootEnvArchKernelURL(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("QEMU_TEST_CACHE", t.TempDir())
 
-	// An arch with no bundle falls back to its configured kernelURL.
-	a := arch{name: "testarch", kernelURL: srv.URL}
-	env, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir())
+	// An arch with no bundle falls back to its configured KernelURL.
+	a := arch.Arch{Name: "testarch", KernelURL: srv.URL}
+	env, err := Resolve(context.Background(), Options{Arch: a, WorkDir: t.TempDir()})
 	if err != nil {
-		t.Fatalf("resolveBootEnv: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
-	if data := readFile(t, env.kernelPath); !bytes.Equal(data, body) {
+	if data := readFile(t, env.KernelPath); !bytes.Equal(data, body) {
 		t.Fatalf("fetched kernel = %q, want %q", data, body)
 	}
 }
 
 func TestResolveBootEnvNoKernel(t *testing.T) {
-	a := arch{name: "bare"} // no kernel, no bundle, no URL
-	if _, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir()); err == nil {
+	a := arch.Arch{Name: "bare"} // no kernel, no bundle, no URL
+	if _, err := Resolve(context.Background(), Options{Arch: a, WorkDir: t.TempDir()}); err == nil {
 		t.Fatal("expected error when an arch has neither a kernel/bundle nor a URL")
 	}
 }
 
 func TestResolveBootEnvBuiltBundle(t *testing.T) {
-	// An arch with a bundleConfig builds a bundle from upstream sources and then
+	// An arch with a BundleConfig builds a bundle from upstream sources and then
 	// uses it like a downloaded bundle: the kernel and modules tree resolve.
 	var hits atomic.Int32
 	mux := http.NewServeMux()
@@ -269,27 +270,27 @@ func TestResolveBootEnvBuiltBundle(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("QEMU_TEST_CACHE", t.TempDir())
 
-	a := arch{name: "built", bundleConfig: &bundler.Config{Sources: []bundler.Source{
+	a := arch.Arch{Name: "built", BundleConfig: &bundler.Config{Sources: []bundler.Source{
 		{URL: srv.URL + "/vmlinuz", Dst: "vmlinuz"},
 		{URL: srv.URL + "/modules.dep", Dst: "modules/modules.dep"},
 	}}}
 
-	env, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir())
+	env, err := Resolve(context.Background(), Options{Arch: a, WorkDir: t.TempDir()})
 	if err != nil {
-		t.Fatalf("resolveBootEnv: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
-	if data := readFile(t, env.kernelPath); !bytes.Equal(data, []byte("KERNEL-IMAGE")) {
+	if data := readFile(t, env.KernelPath); !bytes.Equal(data, []byte("KERNEL-IMAGE")) {
 		t.Fatalf("built bundle kernel = %q, want %q", data, "KERNEL-IMAGE")
 	}
-	if filepath.Base(env.modulesDir) != "modules" {
-		t.Fatalf("built bundle modulesDir = %q, want a 'modules' tree", env.modulesDir)
+	if filepath.Base(env.ModulesDir) != "modules" {
+		t.Fatalf("built bundle ModulesDir = %q, want a 'modules' tree", env.ModulesDir)
 	}
 
 	// A second run reuses the cached build (the .tgz is keyed by config) and the
 	// bundler's cached sources, so it makes no further network requests.
 	srcHits := hits.Load()
-	if _, err := resolveBootEnv(context.Background(), a, runOpts{}, t.TempDir()); err != nil {
-		t.Fatalf("resolveBootEnv (reuse): %v", err)
+	if _, err := Resolve(context.Background(), Options{Arch: a, WorkDir: t.TempDir()}); err != nil {
+		t.Fatalf("Resolve (reuse): %v", err)
 	}
 	if got := hits.Load(); got != srcHits {
 		t.Fatalf("offline-first: hits = %d after reuse, want %d", got, srcHits)

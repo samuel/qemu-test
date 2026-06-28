@@ -1,4 +1,8 @@
-package main
+// Package modules is the host-side kernel-module resolver. Given a bundle's
+// modules tree and a list of requested module names, it computes each module's
+// dependency closure in load order and returns the .ko files to pack into the
+// initramfs, mirroring modprobe's "load if available" behavior.
+package modules
 
 import (
 	"bytes"
@@ -18,17 +22,17 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// resolvedModule is a kernel module to pack into the initramfs and load in the
-// guest, in dependency order (dependencies before dependents).
-type resolvedModule struct {
-	name       string // canonical module name (underscores), for logging
-	hostPath   string // absolute path to the .ko on the host
-	base       string // file base name, e.g. "xhci-pci.ko" or "xhci-pci.ko.xz"
-	compressed bool   // base is a compressed .ko (.gz/.xz/.zst) needing kernel-side decompression
+// Module is a kernel module to pack into the initramfs and load in the guest, in
+// dependency order (dependencies before dependents).
+type Module struct {
+	Name       string // canonical module name (underscores), for logging
+	HostPath   string // absolute path to the .ko on the host
+	Base       string // file base name, e.g. "xhci-pci.ko" or "xhci-pci.ko.xz"
+	Compressed bool   // Base is a compressed .ko (.gz/.xz/.zst) needing kernel-side decompression
 }
 
-// resolveModules turns the requested module names into the ordered set of .ko
-// files to load, sourced from the bundle's modules tree at modulesDir. It mirrors
+// Resolve turns the requested module names into the ordered set of .ko files to
+// load, sourced from the bundle's modules tree at modulesDir. It mirrors
 // modprobe's "load if available" behavior: a requested module that has a matching
 // .ko is loaded together with its dependency closure (dependencies first); one
 // that is absent from the tree is presumed built into the kernel (or simply
@@ -37,7 +41,7 @@ type resolvedModule struct {
 //
 // Dependencies come from modules.dep when present, else from each module's ELF
 // .modinfo (see buildModuleGraph), so a tree that ships only .ko files still works.
-func resolveModules(modulesDir string, names []string) (load []resolvedModule, skipped []string, err error) {
+func Resolve(modulesDir string, names []string) (load []Module, skipped []string, err error) {
 	var requested []string
 	for _, n := range names {
 		if n = strings.TrimSpace(n); n != "" {
@@ -92,17 +96,17 @@ func resolveModules(modulesDir string, names []string) (load []resolvedModule, s
 		if _, err := os.Stat(host); err != nil {
 			return nil, nil, fmt.Errorf("module file %q: %w", rel, err)
 		}
-		load = append(load, resolvedModule{
-			name:       name,
-			hostPath:   host,
-			base:       base,
-			compressed: !strings.HasSuffix(base, ".ko"),
+		load = append(load, Module{
+			Name:       name,
+			HostPath:   host,
+			Base:       base,
+			Compressed: !strings.HasSuffix(base, ".ko"),
 		})
 	}
 	return load, skipped, nil
 }
 
-// buildModuleGraph builds the lookups resolveModules needs from a modules tree:
+// buildModuleGraph builds the lookups Resolve needs from a modules tree:
 // an index from canonical module name to its tree-relative .ko path, and depsOf,
 // a per-module list of canonical dependency names. It prefers modules.dep (the
 // authoritative depmod output) when present; otherwise it walks the tree to index
@@ -111,7 +115,7 @@ func resolveModules(modulesDir string, names []string) (load []resolvedModule, s
 // .modinfo cannot be read (not a parseable ELF, or an unknown compression) yields
 // no dependencies, with a single warning.
 func buildModuleGraph(modulesDir string) (map[string]string, func(string) []string, error) {
-	if hasModulesDep(modulesDir) {
+	if HasModulesDep(modulesDir) {
 		depMap, idx, err := parseModulesDep(modulesDir)
 		if err != nil {
 			// A modules.dep(.bin) we cannot parse is not fatal: fall back to the
@@ -154,9 +158,9 @@ func buildModuleGraph(modulesDir string) (map[string]string, func(string) []stri
 	return idx, depsOf, nil
 }
 
-// hasModulesDep reports whether the tree has a modules.dep in either form (text
+// HasModulesDep reports whether the tree has a modules.dep in either form (text
 // or the binary modules.dep.bin).
-func hasModulesDep(modulesDir string) bool {
+func HasModulesDep(modulesDir string) bool {
 	for _, f := range []string{"modules.dep", "modules.dep.bin"} {
 		if _, err := os.Stat(filepath.Join(modulesDir, f)); err == nil {
 			return true
@@ -220,7 +224,7 @@ func walkModuleIndex(modulesDir string) (map[string]string, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !isKoFile(d.Name()) {
+		if d.IsDir() || !IsKoFile(d.Name()) {
 			return nil
 		}
 		rel, err := filepath.Rel(modulesDir, p)
@@ -417,8 +421,8 @@ func topoSortModules(roots []string, depsOf func(string) []string, has func(stri
 	return order, nil
 }
 
-// isKoFile reports whether name is a kernel module file (optionally compressed).
-func isKoFile(name string) bool {
+// IsKoFile reports whether name is a kernel module file (optionally compressed).
+func IsKoFile(name string) bool {
 	return strings.HasSuffix(name, ".ko") ||
 		strings.HasSuffix(name, ".ko.gz") ||
 		strings.HasSuffix(name, ".ko.xz") ||

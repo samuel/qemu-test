@@ -1,4 +1,4 @@
-package main
+package boot
 
 import (
 	"archive/tar"
@@ -12,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/samuel/qemu-test/internal/arch"
 	"github.com/samuel/qemu-test/internal/cache"
 )
 
@@ -104,15 +105,15 @@ func TestResolveBundleLocalDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mod, "modules.dep"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := resolveBundle(context.Background(), arch{name: "x"}, dir, false, t.TempDir())
+	env, err := resolveBundle(context.Background(), arch.Arch{Name: "x"}, dir, false, t.TempDir())
 	if err != nil {
 		t.Fatalf("resolveBundle: %v", err)
 	}
-	if env.kernelPath != filepath.Join(dir, "vmlinuz") {
-		t.Fatalf("kernelPath = %q", env.kernelPath)
+	if env.KernelPath != filepath.Join(dir, "vmlinuz") {
+		t.Fatalf("KernelPath = %q", env.KernelPath)
 	}
-	if env.modulesDir != mod {
-		t.Fatalf("modulesDir = %q, want %q", env.modulesDir, mod)
+	if env.ModulesDir != mod {
+		t.Fatalf("ModulesDir = %q, want %q", env.ModulesDir, mod)
 	}
 }
 
@@ -130,13 +131,13 @@ func TestBundleEnvModulesWithoutModulesDep(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rel, "usbcore.ko"), []byte("ko"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env, err := bundleEnv(arch{name: "x"}, dir)
+	env, err := bundleEnv(arch.Arch{Name: "x"}, dir)
 	if err != nil {
 		t.Fatalf("bundleEnv: %v", err)
 	}
 	want := filepath.Join(dir, "lib", "modules", "6.12.0")
-	if env.modulesDir != want {
-		t.Fatalf("modulesDir = %q, want %q (a .ko-only tree should be recognized)", env.modulesDir, want)
+	if env.ModulesDir != want {
+		t.Fatalf("ModulesDir = %q, want %q (a .ko-only tree should be recognized)", env.ModulesDir, want)
 	}
 }
 
@@ -160,18 +161,18 @@ func TestBundleEnvLibModulesAndDTBOverrides(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dtb", "board.dtb"), []byte("dtb"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a := arch{name: "x", bundleKernelPath: "Image", bundleDTBPath: "dtb/board.dtb"}
+	a := arch.Arch{Name: "x", BundleKernelPath: "Image", BundleDTBPath: "dtb/board.dtb"}
 	env, err := bundleEnv(a, dir)
 	if err != nil {
 		t.Fatalf("bundleEnv: %v", err)
 	}
-	if env.kernelPath != filepath.Join(dir, "Image") {
-		t.Fatalf("kernelPath = %q", env.kernelPath)
+	if env.KernelPath != filepath.Join(dir, "Image") {
+		t.Fatalf("KernelPath = %q", env.KernelPath)
 	}
-	if env.modulesDir != rel {
-		t.Fatalf("modulesDir = %q, want %q", env.modulesDir, rel)
+	if env.ModulesDir != rel {
+		t.Fatalf("ModulesDir = %q, want %q", env.ModulesDir, rel)
 	}
-	if env.dtbPath != filepath.Join(dir, "dtb", "board.dtb") {
-		t.Fatalf("dtbPath = %q", env.dtbPath)
+	if env.DTBPath != filepath.Join(dir, "dtb", "board.dtb") {
+		t.Fatalf("DTBPath = %q", env.DTBPath)
 	}
 }

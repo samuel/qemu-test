@@ -1,4 +1,8 @@
-package main
+// Package arch holds the per-architecture registry that drives a guest boot. All
+// architecture-specific knowledge lives in the arches table, so adding a new
+// architecture is "set a default kernel/bundle source + add one entry" rather than
+// scattered code edits.
+package arch
 
 import (
 	"fmt"
@@ -8,38 +12,38 @@ import (
 	"github.com/samuel/qemu-test/internal/bundler"
 )
 
-// arch is the per-architecture configuration needed to boot a guest. All
+// Arch is the per-architecture configuration needed to boot a guest. All
 // architecture-specific knowledge lives in the arches registry, so adding a new
-// architecture is "set a default kernelURL/bundleURL + add one entry" rather than
+// architecture is "set a default KernelURL/BundleURL + add one entry" rather than
 // scattered code edits. -kernel/-bundle override the default for any arch.
-type arch struct {
-	name       string   // user-facing -arch value and kernel dir name, e.g. "amd64"
-	goarch     string   // GOARCH for cross-compiling init + the test binary
-	qemuBinary string   // qemu system emulator, e.g. "qemu-system-x86_64"
-	machine    string   // -machine value; "" omits it (amd64 uses the implicit "pc")
-	cpu        string   // -cpu value under TCG; "" omits it (amd64's default boots)
-	console    string   // kernel console= device, e.g. "ttyS0" (amd64), "ttyAMA0" (arm64)
-	rngDevice  string   // virtio-rng qemu device; "" defaults to "virtio-rng-pci" (s390x overrides with the CCW variant)
-	kernelURL  string   // default bare-kernel URL, downloaded and cached when there's no embedded kernel; "" = require -kernel/-bundle
-	firmware   string   // edk2 firmware blob filename to locate and pass via -bios; "" = none (loong64 needs it for ACPI)
-	cmdline    []string // extra kernel -append tokens (e.g. "earlycon"), merged after console=
-	extraArgs  []string // extra qemu argv, appended verbatim, if an arch ever needs them
+type Arch struct {
+	Name       string   // user-facing -arch value and kernel dir name, e.g. "amd64"
+	GOARCH     string   // GOARCH for cross-compiling init + the test binary
+	QEMUBinary string   // qemu system emulator, e.g. "qemu-system-x86_64"
+	Machine    string   // -machine value; "" omits it (amd64 uses the implicit "pc")
+	CPU        string   // -cpu value under TCG; "" omits it (amd64's default boots)
+	Console    string   // kernel console= device, e.g. "ttyS0" (amd64), "ttyAMA0" (arm64)
+	RNGDevice  string   // virtio-rng qemu device; "" defaults to "virtio-rng-pci" (s390x overrides with the CCW variant)
+	KernelURL  string   // default bare-kernel URL, downloaded and cached when there's no embedded kernel; "" = require -kernel/-bundle
+	Firmware   string   // edk2 firmware blob filename to locate and pass via -bios; "" = none (loong64 needs it for ACPI)
+	Cmdline    []string // extra kernel -append tokens (e.g. "earlycon"), merged after console=
+	ExtraArgs  []string // extra qemu argv, appended verbatim, if an arch ever needs them
 
 	// Boot bundle: an archive (or directory) carrying the kernel together with its
 	// matching modules (and optional device trees), so the two never mismatch. The
-	// in-bundle paths default to a convention (see resolveBundle) and need overriding
-	// only when a bundle's layout differs.
-	bundleConfig      *bundler.Config // if set then used to build a bundle
-	bundleURL         string          // default bundle URL (tgz/tar), fetched + cached + extracted; "" = none
-	bundleKernelPath  string          // kernel path within the bundle; "" = convention ("vmlinuz")
-	bundleModulesPath string          // modules-tree path within the bundle; "" = convention ("modules" else "lib/modules/<release>")
-	bundleDTBPath     string          // device-tree path within the bundle passed via -dtb; "" = none
+	// in-bundle paths default to a convention (see the boot package) and need
+	// overriding only when a bundle's layout differs.
+	BundleConfig      *bundler.Config // if set then used to build a bundle
+	BundleURL         string          // default bundle URL (tgz/tar), fetched + cached + extracted; "" = none
+	BundleKernelPath  string          // kernel path within the bundle; "" = convention ("vmlinuz")
+	BundleModulesPath string          // modules-tree path within the bundle; "" = convention ("modules" else "lib/modules/<release>")
+	BundleDTBPath     string          // device-tree path within the bundle passed via -dtb; "" = none
 }
 
 // arches is the registry of known architectures keyed by GOARCH-style name (the
-// -arch flag value). machine/cpu are intentionally empty for amd64 so its qemu
+// -arch flag value). Machine/CPU are intentionally empty for amd64 so its qemu
 // invocation is byte-identical to before this abstraction existed. arm64/riscv64
-// require -machine virt and a -cpu under TCG; cpu holds the TCG cpu (a future
+// require -machine virt and a -cpu under TCG; CPU holds the TCG cpu (a future
 // -enable-kvm path would substitute "host").
 //
 // s390x and ppc64 are the big-endian entries (Go's canonical big-endian ports),
@@ -64,7 +68,7 @@ type arch struct {
 // that baked drivers in. The "unsigned" image is the plain (non-Secure-Boot) build;
 // its bzImage boots in qemu unchanged. The modules are .ko.xz with no modules.dep
 // (depmod runs at install time), so dependency resolution reads each module's
-// .modinfo (resolveModules/koDepends) and the guest decompresses them in-kernel
+// .modinfo (modules.Resolve) and the guest decompresses them in-kernel
 // (CONFIG_MODULE_DECOMPRESS). Rather than pin a point release, the .deb is resolved
 // from the suite's Packages index: the linux-image-amd64 meta-package names the
 // current ABI, which selects the matching unsigned image (see bundler.DebianRef /
@@ -91,24 +95,24 @@ var amd64BundleConfig = &bundler.Config{
 	},
 }
 
-var arches = map[string]arch{
+var arches = map[string]Arch{
 	"amd64": {
-		name:         "amd64",
-		goarch:       "amd64",
-		qemuBinary:   "qemu-system-x86_64",
-		console:      "ttyS0",
-		bundleConfig: amd64BundleConfig,
+		Name:         "amd64",
+		GOARCH:       "amd64",
+		QEMUBinary:   "qemu-system-x86_64",
+		Console:      "ttyS0",
+		BundleConfig: amd64BundleConfig,
 	},
 	// 386 (32-bit x86) is first-class in Go. Trixie ships no i386 kernel (i386 is a
 	// userland-only port now), so it reuses the amd64 bundle and 64-bit kernel: the
-	// 32-bit init/tests run under the kernel's IA32 emulation. machine/cpu are empty
+	// 32-bit init/tests run under the kernel's IA32 emulation. Machine/CPU are empty
 	// like amd64 (the qemu-system-x86_64 pc machine boots it).
 	"386": {
-		name:         "386",
-		goarch:       "386",
-		qemuBinary:   "qemu-system-x86_64", // 64-bit guest CPU; the 32-bit userspace runs via IA32 emulation
-		console:      "ttyS0",
-		bundleConfig: amd64BundleConfig,
+		Name:         "386",
+		GOARCH:       "386",
+		QEMUBinary:   "qemu-system-x86_64", // 64-bit guest CPU; the 32-bit userspace runs via IA32 emulation
+		Console:      "ttyS0",
+		BundleConfig: amd64BundleConfig,
 	},
 	// arm64 mirrors amd64: a default bundle built from the Debian trixie linux-image
 	// .deb carrying both the kernel (/boot/vmlinuz-*, a gzip-compressed Image qemu's
@@ -118,13 +122,13 @@ var arches = map[string]arch{
 	// is likewise resolved from the suite's Packages index (linux-image-arm64
 	// meta-package -> current ABI) rather than version-pinned.
 	"arm64": {
-		name:       "arm64",
-		goarch:     "arm64",
-		qemuBinary: "qemu-system-aarch64",
-		machine:    "virt",
-		cpu:        "max",
-		console:    "ttyAMA0",
-		bundleConfig: &bundler.Config{
+		Name:       "arm64",
+		GOARCH:     "arm64",
+		QEMUBinary: "qemu-system-aarch64",
+		Machine:    "virt",
+		CPU:        "max",
+		Console:    "ttyAMA0",
+		BundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
 					Debian: &bundler.DebianRef{
@@ -146,13 +150,13 @@ var arches = map[string]arch{
 		},
 	},
 	"arm": {
-		name:       "arm",
-		goarch:     "arm",
-		qemuBinary: "qemu-system-arm",
-		machine:    "virt,highmem=off", // restrict PCI to 32-bit address space
-		cpu:        "max",
-		console:    "ttyAMA0",
-		bundleConfig: &bundler.Config{
+		Name:       "arm",
+		GOARCH:     "arm",
+		QEMUBinary: "qemu-system-arm",
+		Machine:    "virt,highmem=off", // restrict PCI to 32-bit address space
+		CPU:        "max",
+		Console:    "ttyAMA0",
+		BundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
 					URL: "https://deb.debian.org/debian/dists/trixie/main/installer-armhf/current/images/netboot/vmlinuz",
@@ -180,13 +184,13 @@ var arches = map[string]arch{
 	// modules.dep), resolved by readKmodIndex, and decompressed in-guest
 	// (CONFIG_MODULE_DECOMPRESS).
 	"riscv64": {
-		name:       "riscv64",
-		goarch:     "riscv64",
-		qemuBinary: "qemu-system-riscv64",
-		machine:    "virt",
-		cpu:        "max",
-		console:    "ttyS0", // ns16550a UART on the virt machine
-		bundleConfig: &bundler.Config{
+		Name:       "riscv64",
+		GOARCH:     "riscv64",
+		QEMUBinary: "qemu-system-riscv64",
+		Machine:    "virt",
+		CPU:        "max",
+		Console:    "ttyS0", // ns16550a UART on the virt machine
+		BundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
 					URL: "https://deb.debian.org/debian/dists/trixie/main/installer-riscv64/current/images/netboot/debian-installer/riscv64/linux",
@@ -212,14 +216,14 @@ var arches = map[string]arch{
 	// decompressed in-guest), resolved from the Packages index (linux-image-loong64
 	// meta-package -> current ABI; no signed/unsigned split) rather than version-pinned.
 	"loong64": {
-		name:       "loong64",
-		goarch:     "loong64",
-		qemuBinary: "qemu-system-loongarch64",
-		machine:    "virt",
-		cpu:        "max",
-		console:    "ttyS0",                    // 16550 UART on the virt machine
-		firmware:   "edk2-loongarch64-code.fd", // edk2 supplies ACPI tables; without it the i8042 driver faults at boot
-		bundleConfig: &bundler.Config{
+		Name:       "loong64",
+		GOARCH:     "loong64",
+		QEMUBinary: "qemu-system-loongarch64",
+		Machine:    "virt",
+		CPU:        "max",
+		Console:    "ttyS0",                    // 16550 UART on the virt machine
+		Firmware:   "edk2-loongarch64-code.fd", // edk2 supplies ACPI tables; without it the i8042 driver faults at boot
+		BundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
 					Debian: &bundler.DebianRef{
@@ -255,14 +259,14 @@ var arches = map[string]arch{
 	// meta-package -> current ABI; no signed/unsigned split on s390x, so the target
 	// package name has no -unsigned suffix). Same .ko.xz/.modinfo notes as amd64.
 	"s390x": {
-		name:       "s390x",
-		goarch:     "s390x",
-		qemuBinary: "qemu-system-s390x",
-		machine:    "s390-ccw-virtio",
-		cpu:        "max",            // all TCG-emulable facilities; kvm branch substitutes "host"
-		console:    "ttysclp0",       // SCLP line console; qemu maps it to -serial stdio.
-		rngDevice:  "virtio-rng-ccw", // CCW bus; avoids the zPCI auto-wrap a -pci device would trigger
-		bundleConfig: &bundler.Config{
+		Name:       "s390x",
+		GOARCH:     "s390x",
+		QEMUBinary: "qemu-system-s390x",
+		Machine:    "s390-ccw-virtio",
+		CPU:        "max",            // all TCG-emulable facilities; kvm branch substitutes "host"
+		Console:    "ttysclp0",       // SCLP line console; qemu maps it to -serial stdio.
+		RNGDevice:  "virtio-rng-ccw", // CCW bus; avoids the zPCI auto-wrap a -pci device would trigger
+		BundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
 					Debian: &bundler.DebianRef{
@@ -291,7 +295,7 @@ var arches = map[string]arch{
 	// kernel+initrd as for arm; the bundle is instead built from debian-ports linux
 	// .deb packages — the bootable vmlinux from linux-binary plus the matching module
 	// tree from linux-modules. Those modules are .ko.xz with no modules.dep, so
-	// dependency resolution reads each module's .modinfo (resolveModules/koDepends)
+	// dependency resolution reads each module's .modinfo (modules.Resolve)
 	// and the guest decompresses them in-kernel (CONFIG_MODULE_DECOMPRESS, set in the
 	// Debian kernel). -out (virtio-9p-pci) attaches, but 9p is modular here too, so a
 	// test needing the share must load it (e.g. -module 9pnet_virtio). Both .debs are
@@ -300,13 +304,13 @@ var arches = map[string]arch{
 	// substituted into both the linux-binary and linux-modules package names (see
 	// bundler.DebianRef); the two share that ABI so kernel and modules stay matched.
 	"ppc64": {
-		name:       "ppc64",
-		goarch:     "ppc64",
-		qemuBinary: "qemu-system-ppc64",
-		machine:    "pseries",
-		cpu:        "max",  // pseries defaults to a recent POWER cpu
-		console:    "hvc0", // spapr-vty hypervisor console; qemu maps it to -serial stdio
-		bundleConfig: &bundler.Config{
+		Name:       "ppc64",
+		GOARCH:     "ppc64",
+		QEMUBinary: "qemu-system-ppc64",
+		Machine:    "pseries",
+		CPU:        "max",  // pseries defaults to a recent POWER cpu
+		Console:    "hvc0", // spapr-vty hypervisor console; qemu maps it to -serial stdio
+		BundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
 					Debian: &bundler.DebianRef{
@@ -352,13 +356,13 @@ var arches = map[string]arch{
 	// (CONFIG_MODULE_DECOMPRESS). USB (qemu-xhci) and -out (virtio-9p-pci) work on the
 	// pseries PCI bus; both are modular, but -out adds its 9p modules automatically.
 	"ppc64le": {
-		name:       "ppc64le",
-		goarch:     "ppc64le",
-		qemuBinary: "qemu-system-ppc64", // same binary as ppc64; the LE kernel selects endianness
-		machine:    "pseries",
-		cpu:        "max",  // a recent POWER cpu, which is little-endian-capable
-		console:    "hvc0", // spapr-vty hypervisor console; qemu maps it to -serial stdio
-		bundleConfig: &bundler.Config{
+		Name:       "ppc64le",
+		GOARCH:     "ppc64le",
+		QEMUBinary: "qemu-system-ppc64", // same binary as ppc64; the LE kernel selects endianness
+		Machine:    "pseries",
+		CPU:        "max",  // a recent POWER cpu, which is little-endian-capable
+		Console:    "hvc0", // spapr-vty hypervisor console; qemu maps it to -serial stdio
+		BundleConfig: &bundler.Config{
 			Sources: []bundler.Source{
 				{
 					Debian: &bundler.DebianRef{
@@ -381,9 +385,9 @@ var arches = map[string]arch{
 	},
 }
 
-// lookupArch returns the configuration for the named architecture, or an error
+// Lookup returns the configuration for the named architecture, or an error
 // listing the available names.
-func lookupArch(name string) (arch, error) {
+func Lookup(name string) (Arch, error) {
 	a, ok := arches[name]
 	if !ok {
 		names := make([]string, 0, len(arches))
@@ -391,54 +395,54 @@ func lookupArch(name string) (arch, error) {
 			names = append(names, n)
 		}
 		slices.Sort(names)
-		return arch{}, fmt.Errorf("unknown architecture %q (available: %s)", name, strings.Join(names, ", "))
+		return Arch{}, fmt.Errorf("unknown architecture %q (available: %s)", name, strings.Join(names, ", "))
 	}
 	return a, nil
 }
 
-// bootConfig carries the per-run inputs bootArgs needs beyond the static arch
+// BootConfig carries the per-run inputs BootArgs needs beyond the static arch
 // data: the resolved paths plus the run-time accel and kernel-cmdline choices.
-type bootConfig struct {
-	kernelPath   string
-	dtbPath      string // device tree to pass via -dtb; "" omits it (most machines auto-generate one)
-	firmwarePath string // firmware blob to pass via -bios; "" omits it (only loong64 needs one)
-	initrdPath   string
-	qmpSock      string
-	kvm          bool     // append -enable-kvm and use -cpu host (native virtualization)
-	userSetCPU   bool     // user already passed -cpu (via -qemu.arg); suppress the tool's -cpu
-	extraCmdline []string // extra kernel -append tokens (-append flag), merged after console=
+type BootConfig struct {
+	KernelPath   string
+	DTBPath      string // device tree to pass via -dtb; "" omits it (most machines auto-generate one)
+	FirmwarePath string // firmware blob to pass via -bios; "" omits it (only loong64 needs one)
+	InitrdPath   string
+	QMPSock      string
+	KVM          bool     // append -enable-kvm and use -cpu host (native virtualization)
+	UserSetCPU   bool     // user already passed -cpu (via -qemu.arg); suppress the tool's -cpu
+	ExtraCmdline []string // extra kernel -append tokens (-append flag), merged after console=
 }
 
-// bootArgs returns the architecture-derived qemu arguments for a run. The qemu
-// binary itself is a.qemuBinary (the exec target), not part of this slice. These
+// BootArgs returns the architecture-derived qemu arguments for a run. The qemu
+// binary itself is a.QEMUBinary (the exec target), not part of this slice. These
 // are appended after the user's qemu args so the tool's -append wins, matching
 // qemu's last-wins rule for the kernel command line.
-func (a arch) bootArgs(c bootConfig) []string {
-	args := []string{"-kernel", c.kernelPath}
-	if c.dtbPath != "" {
-		args = append(args, "-dtb", c.dtbPath)
+func (a Arch) BootArgs(c BootConfig) []string {
+	args := []string{"-kernel", c.KernelPath}
+	if c.DTBPath != "" {
+		args = append(args, "-dtb", c.DTBPath)
 	}
-	if c.firmwarePath != "" {
-		args = append(args, "-bios", c.firmwarePath)
+	if c.FirmwarePath != "" {
+		args = append(args, "-bios", c.FirmwarePath)
 	}
-	if a.machine != "" {
-		args = append(args, "-machine", a.machine)
+	if a.Machine != "" {
+		args = append(args, "-machine", a.Machine)
 	}
-	if c.kvm {
+	if c.KVM {
 		args = append(args, "-enable-kvm")
 	}
 	// -cpu: under KVM use "host" for native speed and feature pass-through;
 	// otherwise the arch's TCG cpu. A user-supplied -cpu (via -qemu.arg, which
 	// precedes these args) takes precedence, so suppress ours when one was given.
 	switch {
-	case c.userSetCPU:
+	case c.UserSetCPU:
 		// keep the user's -cpu
-	case c.kvm:
+	case c.KVM:
 		args = append(args, "-cpu", "host")
-	case a.cpu != "":
-		args = append(args, "-cpu", a.cpu)
+	case a.CPU != "":
+		args = append(args, "-cpu", a.CPU)
 	}
-	rngDevice := a.rngDevice
+	rngDevice := a.RNGDevice
 	if rngDevice == "" {
 		rngDevice = "virtio-rng-pci"
 	}
@@ -453,13 +457,13 @@ func (a arch) bootArgs(c bootConfig) []string {
 		// Feed the guest entropy pool (the guest loads virtio_rng): crypto/rand uses
 		// blocking getrandom, which can stall early in boot before the CRNG is seeded.
 		"-device", rngDevice,
-		"-qmp", "unix:"+c.qmpSock+",server=on,wait=off")
-	args = append(args, a.extraArgs...)
+		"-qmp", "unix:"+c.QMPSock+",server=on,wait=off")
+	args = append(args, a.ExtraArgs...)
 	// panic=-1 reboots immediately on a kernel panic; paired with -no-reboot that
 	// makes qemu exit at once (a fast, diagnosable failure) instead of hanging until
 	// the host -timeout. Placed before the user's -append tokens so -append wins.
-	cmdline := append([]string{"console=" + a.console, "panic=-1"}, a.cmdline...)
-	cmdline = append(cmdline, c.extraCmdline...)
-	args = append(args, "-append", strings.Join(cmdline, " "), "-initrd", c.initrdPath)
+	cmdline := append([]string{"console=" + a.Console, "panic=-1"}, a.Cmdline...)
+	cmdline = append(cmdline, c.ExtraCmdline...)
+	args = append(args, "-append", strings.Join(cmdline, " "), "-initrd", c.InitrdPath)
 	return args
 }

@@ -1,4 +1,4 @@
-package main
+package modules
 
 import (
 	"bytes"
@@ -55,10 +55,10 @@ func writeModuleTree(t *testing.T, dep map[string]string, builtin []string) stri
 	return dir
 }
 
-func bases(mods []resolvedModule) []string {
+func bases(mods []Module) []string {
 	out := make([]string, len(mods))
 	for i, m := range mods {
-		out[i] = m.base
+		out[i] = m.Base
 	}
 	return out
 }
@@ -71,9 +71,9 @@ func TestResolveModulesDependencyOrder(t *testing.T) {
 		"kernel/drivers/usb/core/usbcore.ko":  "",
 	}, nil)
 
-	load, skipped, err := resolveModules(dir, []string{"xhci_pci"})
+	load, skipped, err := Resolve(dir, []string{"xhci_pci"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(skipped) != 0 {
 		t.Fatalf("skipped = %v, want none", skipped)
@@ -90,9 +90,9 @@ func TestResolveModulesNameNormalization(t *testing.T) {
 		"kernel/drivers/usb/host/xhci-hcd.ko": "",
 	}, nil)
 	// The on-disk file uses a hyphen; the request uses an underscore.
-	load, _, err := resolveModules(dir, []string{"xhci_hcd"})
+	load, _, err := Resolve(dir, []string{"xhci_hcd"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if got := bases(load); !slices.Equal(got, []string{"xhci-hcd.ko"}) {
 		t.Fatalf("load = %v, want [xhci-hcd.ko]", got)
@@ -105,9 +105,9 @@ func TestResolveModulesBuiltinSkipped(t *testing.T) {
 	}, []string{"kernel/drivers/usb/host/xhci-hcd.ko"})
 
 	// xhci_hcd is listed in modules.builtin but has no .ko: presumed built in.
-	load, skipped, err := resolveModules(dir, []string{"xhci_hcd"})
+	load, skipped, err := Resolve(dir, []string{"xhci_hcd"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(load) != 0 {
 		t.Fatalf("load = %v, want none (built in)", bases(load))
@@ -122,9 +122,9 @@ func TestResolveModulesUnknownSkipped(t *testing.T) {
 		"kernel/drivers/usb/core/usbcore.ko": "",
 	}, nil)
 	// An unknown module is not an error under the hybrid policy: it's skipped.
-	load, skipped, err := resolveModules(dir, []string{"does_not_exist"})
+	load, skipped, err := Resolve(dir, []string{"does_not_exist"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(load) != 0 {
 		t.Fatalf("load = %v, want none", bases(load))
@@ -136,9 +136,9 @@ func TestResolveModulesUnknownSkipped(t *testing.T) {
 
 func TestResolveModulesNoTree(t *testing.T) {
 	// No modules tree (bare kernel): every request is presumed built in.
-	load, skipped, err := resolveModules("", []string{"xhci_pci", "foo"})
+	load, skipped, err := Resolve("", []string{"xhci_pci", "foo"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(load) != 0 {
 		t.Fatalf("load = %v, want none", bases(load))
@@ -152,11 +152,11 @@ func TestResolveModulesCompressedFlag(t *testing.T) {
 	dir := writeModuleTree(t, map[string]string{
 		"kernel/drivers/usb/core/usbcore.ko.xz": "",
 	}, nil)
-	load, _, err := resolveModules(dir, []string{"usbcore"})
+	load, _, err := Resolve(dir, []string{"usbcore"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
-	if len(load) != 1 || !load[0].compressed {
+	if len(load) != 1 || !load[0].Compressed {
 		t.Fatalf("expected one compressed module, got %+v", load)
 	}
 }
@@ -302,9 +302,9 @@ func TestResolveModulesNoModulesDepFromModinfo(t *testing.T) {
 	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/host/xhci-hcd.ko"), []string{"usbcore"})
 	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/core/usbcore.ko"), nil)
 
-	load, skipped, err := resolveModules(dir, []string{"xhci_pci"})
+	load, skipped, err := Resolve(dir, []string{"xhci_pci"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(skipped) != 0 {
 		t.Fatalf("skipped = %v, want none", skipped)
@@ -327,9 +327,9 @@ func TestResolveModulesNoModulesDepDegrade(t *testing.T) {
 	if err := os.WriteFile(ko, []byte("not an elf file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	load, _, err := resolveModules(dir, []string{"usbcore"})
+	load, _, err := Resolve(dir, []string{"usbcore"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if got := bases(load); !slices.Equal(got, []string{"usbcore.ko"}) {
 		t.Fatalf("load = %v, want [usbcore.ko]", got)
@@ -364,9 +364,9 @@ func TestResolveModulesNoModulesDepFromModinfoXz(t *testing.T) {
 	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/host/xhci-hcd.ko.xz"), []string{"usbcore"})
 	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/core/usbcore.ko.xz"), nil)
 
-	load, skipped, err := resolveModules(dir, []string{"xhci_pci"})
+	load, skipped, err := Resolve(dir, []string{"xhci_pci"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(skipped) != 0 {
 		t.Fatalf("skipped = %v, want none", skipped)
@@ -375,7 +375,7 @@ func TestResolveModulesNoModulesDepFromModinfoXz(t *testing.T) {
 	if got := bases(load); !slices.Equal(got, want) {
 		t.Fatalf("load order = %v, want %v (deps from .modinfo, dependencies first)", got, want)
 	}
-	if !load[0].compressed {
+	if !load[0].Compressed {
 		t.Fatalf("expected compressed modules, got %+v", load)
 	}
 }
@@ -515,9 +515,9 @@ func TestResolveModulesFromModulesDepBin(t *testing.T) {
 		"xhci_hcd": "kernel/drivers/usb/host/xhci-hcd.ko: kernel/drivers/usb/core/usbcore.ko",
 		"xhci_pci": "kernel/drivers/usb/host/xhci-pci.ko: kernel/drivers/usb/host/xhci-hcd.ko kernel/drivers/usb/core/usbcore.ko",
 	})
-	load, skipped, err := resolveModules(dir, []string{"xhci_pci"})
+	load, skipped, err := Resolve(dir, []string{"xhci_pci"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(skipped) != 0 {
 		t.Fatalf("skipped = %v, want none", skipped)
@@ -532,9 +532,9 @@ func TestResolveModulesBuiltinBinSkipped(t *testing.T) {
 	dir := t.TempDir()
 	mkKo(t, dir, "kernel/usbcore.ko") // a .ko so the tree is recognized
 	writeKmodIndex(t, filepath.Join(dir, "modules.builtin.bin"), map[string]string{"xhci_pci": ""})
-	load, skipped, err := resolveModules(dir, []string{"xhci_pci"})
+	load, skipped, err := Resolve(dir, []string{"xhci_pci"})
 	if err != nil {
-		t.Fatalf("resolveModules: %v", err)
+		t.Fatalf("Resolve: %v", err)
 	}
 	if len(load) != 0 {
 		t.Fatalf("load = %v, want none (built in)", bases(load))

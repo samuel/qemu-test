@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"flag"
@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+// MultiStringFlag is a flag.Value that accumulates repeated string values.
 type MultiStringFlag []string
 
 func (f *MultiStringFlag) String() string {
@@ -22,10 +23,10 @@ func (f *MultiStringFlag) Set(value string) error {
 	return nil
 }
 
-// usage prints the help/usage message. It is wired in as flag.Usage, so it is
-// also shown for -h/-help and on flag parse errors.
-func usage() {
-	out := flag.CommandLine.Output()
+// usage prints the help/usage message for the main command. It is wired in as
+// fs.Usage, so it is also shown for -h/-help and on flag parse errors.
+func usage(fs *flag.FlagSet) {
+	out := fs.Output()
 	_, _ = fmt.Fprint(out, `qemu-test runs a Go package's tests inside a freshly-booted QEMU VM.
 
 Usage:
@@ -38,7 +39,7 @@ Commands:
 
 Flags:
 `)
-	flag.PrintDefaults()
+	fs.PrintDefaults()
 	_, _ = fmt.Fprint(out, `
 Examples:
   qemu-test ./tests

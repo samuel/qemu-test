@@ -40,12 +40,12 @@ downloaded and cached on first run — see [Fetching kernels from a URL](#fetchi
 `http(s)://` URL):
 
 ```sh
-qemu-test -arch riscv64 ./guesttests                          # uses the default Debian bundle
-qemu-test -arch riscv64 -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on riscv64
-qemu-test -arch 386 ./guesttests                              # 32-bit x86 on the amd64 kernel (IA32 emulation)
-qemu-test -arch loong64 ./guesttests                          # LoongArch; edk2 firmware auto-located for -bios
-qemu-test -arch arm64 -kernel ./Image ./guesttests            # override with a local image
-qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./guesttests
+qemu-test -arch riscv64 ./internal/guesttests                          # uses the default Debian bundle
+qemu-test -arch riscv64 -module xhci_pci -qemu.device qemu-xhci ./internal/guesttests  # USB on riscv64
+qemu-test -arch 386 ./internal/guesttests                              # 32-bit x86 on the amd64 kernel (IA32 emulation)
+qemu-test -arch loong64 ./internal/guesttests                          # LoongArch; edk2 firmware auto-located for -bios
+qemu-test -arch arm64 -kernel ./Image ./internal/guesttests            # override with a local image
+qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./internal/guesttests
 ```
 
 `amd64` and `arm64` (the default and primary arches) ship a default `bundleConfig` built from the
@@ -79,8 +79,8 @@ cross-compiled for that `GOARCH` — runs **big-endian**, catching byte-order bu
 little-endian host can't.
 
 ```sh
-qemu-test -arch s390x ./guesttests                       # default Debian linux-image bundle; SCLP console, CCW bus
-qemu-test -arch s390x -module xhci_pci -qemu.device qemu-xhci ./guesttests  # USB on s390x via zPCI
+qemu-test -arch s390x ./internal/guesttests                       # default Debian linux-image bundle; SCLP console, CCW bus
+qemu-test -arch s390x -module xhci_pci -qemu.device qemu-xhci ./internal/guesttests  # USB on s390x via zPCI
 ```
 
 `s390x` ships a default `bundleConfig` built from the Debian trixie `linux-image-s390x` `.deb`
@@ -131,8 +131,8 @@ when the kernel has actually changed (a `304 Not Modified` keeps the cached copy
 is unreachable during a refresh but a cached copy exists, that copy is used.
 
 ```sh
-qemu-test -kernel https://example.com/vmlinuz ./guesttests              # download + cache, then reuse
-qemu-test -kernel https://example.com/vmlinuz -refresh ./guesttests  # re-validate against the remote
+qemu-test -kernel https://example.com/vmlinuz ./internal/guesttests              # download + cache, then reuse
+qemu-test -kernel https://example.com/vmlinuz -refresh ./internal/guesttests  # re-validate against the remote
 ```
 
 ### Boot bundles and kernel modules
@@ -177,8 +177,8 @@ present as a `.ko` but fails to load fails the run. Names use the kernel's conve
 `_` are interchangeable (as with `modprobe`).
 
 ```sh
-qemu-test -arch arm64 -bundle https://example.com/arm64-boot.tgz -module xhci_pci ./guesttests
-qemu-test -bundle ./boot -module xhci_pci ./guesttests   # ./boot is an extracted bundle directory
+qemu-test -arch arm64 -bundle https://example.com/arm64-boot.tgz -module xhci_pci ./internal/guesttests
+qemu-test -bundle ./boot -module xhci_pci ./internal/guesttests   # ./boot is an extracted bundle directory
 ```
 
 Only the requested modules and their dependencies are packed (never the whole tree), so the
@@ -286,7 +286,7 @@ default `amd64`, `arm64`, and `ppc64` bundles use this; for example amd64:
 The result drops straight into `-bundle`:
 
 ```sh
-qemu-test -arch arm -bundle ./arm-boot.tgz -module xhci_pci ./guesttests
+qemu-test -arch arm -bundle ./arm-boot.tgz -module xhci_pci ./internal/guesttests
 ```
 
 **As an arch default.** An arch can embed this same config (a `bundleConfig` in its registry
@@ -331,11 +331,11 @@ go run . ./your/package
 ## Quick start
 
 ```sh
-# Run every test in ./guesttests inside a VM
-qemu-test ./guesttests
+# Run every test in ./internal/guesttests inside a VM
+qemu-test ./internal/guesttests
 
 # Run a single test, verbose test output, verbose (debug) tool logging
-qemu-test -test.run TestFoo -test.v -v ./guesttests
+qemu-test -test.run TestFoo -test.v -v ./internal/guesttests
 ```
 
 The bundled `guesttests` package is a working sample: `TestEnv` passes by default and fails
@@ -347,7 +347,7 @@ only when `GUESTTEST_FAIL` is set (see [Environment variables](#environment-vari
 qemu-test [flags] <package> [test args...]
 ```
 
-- **`<package>`** is a Go package path (e.g. `./guesttests`, `.`), the same as you'd give `go test`.
+- **`<package>`** is a Go package path (e.g. `./internal/guesttests`, `.`), the same as you'd give `go test`.
 - **Tool flags** go *before* the package path.
 - **`[test args...]`** after the package path are forwarded verbatim to the test binary inside
   the guest, so anything `go test` accepts works (e.g. `-test.count=2`, `-test.timeout=30s`).
@@ -478,9 +478,9 @@ The guest and host communicate over a small line protocol on the serial console:
 go test ./...
 
 # End-to-end against the sample package (requires qemu-system-x86_64)
-go run . ./guesttests                          # -> PASS, exit 0
-go run . -env GUESTTEST_FAIL=1 ./guesttests    # -> FAIL, exit 1
+go run . ./internal/guesttests                          # -> PASS, exit 0
+go run . -env GUESTTEST_FAIL=1 ./internal/guesttests    # -> FAIL, exit 1
 ```
 
-If you change the guest `init` program, the embedded source under `init/` is what ships —
+If you change the guest `init` program, the embedded source under `internal/init/` is what ships —
 there's no separate rebuild step, but the change must compile under the embedded `go.mod`.
