@@ -26,9 +26,8 @@ func TestLookupArch(t *testing.T) {
 }
 
 func TestBootArgsAmd64ByteIdentity(t *testing.T) {
-	// Guards the shipping arch's qemu command: amd64 emits no -machine/-cpu and a
-	// console=ttyS0 cmdline, plus the tool's standard -no-reboot, virtio-rng device,
-	// and panic=-1 (so a panic exits qemu rather than hanging).
+	// amd64 emits no -machine/-cpu, plus the tool's standard -no-reboot,
+	// virtio-rng device, and panic=-1.
 	a, err := Lookup("amd64")
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +101,7 @@ func TestBootArgsExtraCmdline(t *testing.T) {
 
 func TestBootArgsDataDriven(t *testing.T) {
 	// A non-amd64 entry is pure data: machine/cpu/console and extra cmdline tokens
-	// must surface in the right places with no code changes.
+	// must surface in the right places.
 	a := Arch{
 		Name:       "arm64",
 		GOARCH:     "arm64",
@@ -151,7 +150,7 @@ func TestBootArgsDTB(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("dtb BootArgs =\n%q\nwant\n%q", got, want)
 	}
-	// With no DTBPath, no -dtb appears (amd64 byte-identity is covered separately).
+	// With no DTBPath, no -dtb appears.
 	if slices.Contains(a.BootArgs(BootConfig{KernelPath: "/tmp/k", InitrdPath: "/tmp/i", QMPSock: "/tmp/q"}), "-dtb") {
 		t.Fatal("no DTBPath should emit no -dtb")
 	}

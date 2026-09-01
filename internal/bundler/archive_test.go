@@ -129,9 +129,8 @@ func zstdBytes(t *testing.T, b []byte) []byte {
 }
 
 // debBytes builds a minimal Debian .deb (an ar archive) whose data member is
-// named dataName with content dataTar (an already-formatted, possibly compressed
-// tar). A debian-binary and a stub control member precede it, matching a real
-// .deb's member order so the reader must skip past them to reach the data member.
+// named dataName with content dataTar. A debian-binary and a stub control member
+// precede it, as in a real .deb, so the reader must skip past them.
 func debBytes(t *testing.T, dataName string, dataTar []byte) []byte {
 	t.Helper()
 	var out bytes.Buffer
@@ -183,8 +182,7 @@ func TestReadArchiveFormats(t *testing.T) {
 		"usr/lib/modules/6.12/modules.dep":     "deps",
 		"usr/lib/modules/6.12/kernel/e1000.ko": "ko",
 	}
-	// Fresh records per call: WriteRecord consumes each record's reader, so a
-	// shared slice cannot be encoded twice.
+	// Fresh records per call: WriteRecord consumes each record's reader.
 	cpioRecs := func() []cpio.Record {
 		return []cpio.Record{
 			regRec("usr/lib/modules/6.12/modules.dep", "deps"),
@@ -232,8 +230,7 @@ func TestReadArchiveSkipsNonRegular(t *testing.T) {
 }
 
 func TestReadArchiveDeb(t *testing.T) {
-	// A .deb (ar) is unwrapped to its data.tar member, which may itself be
-	// compressed; the entry names keep their installed (./-prefixed) paths.
+	// A .deb is unwrapped to its data.tar member, which may itself be compressed.
 	want := map[string]string{
 		"usr/lib/modules/6.12/kernel/e1000.ko.xz": "ko",
 		"boot/vmlinux-6.12":                       "kernel",

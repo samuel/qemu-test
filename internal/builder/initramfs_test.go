@@ -93,7 +93,7 @@ func TestBuildInitramfs(t *testing.T) {
 }
 
 // Two inputs that normalize to the same name must be rejected rather than
-// silently collapsed (which would drop a file from the archive).
+// silently collapsed.
 func TestBuildInitramfsRejectsCollision(t *testing.T) {
 	files := map[string]io.Reader{
 		"init":  bytes.NewBufferString("a"),
@@ -125,8 +125,8 @@ func TestBuildInitramfsDoesNotMutateInput(t *testing.T) {
 	}
 }
 
-// seekOnlyReader exposes only Read and Seek (no Len/Stat) so SizeFromReader must
-// fall back to seeking to determine the size.
+// seekOnlyReader exposes only Read and Seek, so SizeFromReader must fall back to
+// seeking.
 type seekOnlyReader struct{ r *bytes.Reader }
 
 func (s seekOnlyReader) Read(p []byte) (int, error)                { return s.r.Read(p) }

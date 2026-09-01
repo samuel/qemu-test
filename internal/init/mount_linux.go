@@ -57,8 +57,6 @@ func mountfs() error {
 		log.Printf("tmpfs on /run: %v", err)
 	}
 
-	// /proc is useful for exposing process details and for
-	// interactive debugging sessions.
 	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
 		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
 			// /proc was already mounted (common in setups using nfsroot= or initramfs)
@@ -67,8 +65,6 @@ func mountfs() error {
 		}
 	}
 
-	// /sys is useful for retrieving additional status from the
-	// kernel, e.g. ethernet device carrier status.
 	if err := syscall.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
 		if sce, ok := err.(syscall.Errno); ok && sce == syscall.EBUSY {
 			// /sys was already mounted (common in setups using nfsroot= or initramfs)
@@ -77,7 +73,7 @@ func mountfs() error {
 		}
 	}
 
-	// Create /perm/var if needed so that the /var symlink resolves
+	// So the /var symlink resolves.
 	if err := os.MkdirAll("/perm/var", 0755); err != nil {
 		log.Printf("mkdir /perm/var: %v", err)
 	}
@@ -93,13 +89,9 @@ func mountfs() error {
 	return nil
 }
 
-// mountOut mounts the optional host-shared directory (virtio-9p) that the host
-// attaches when run with -out, letting tests hand files (e.g. coverage) back to
-// the host. It must run after loadModules: the default bundles build 9p as
-// modules (the host adds "9p"/"9pnet_virtio" to the load list for -out), so the
-// 9p filesystem and its virtio transport are not registered until those load.
-// Best-effort: without -out the device is absent and the mount fails harmlessly,
-// so log-and-continue rather than fail the run.
+// mountOut mounts the virtio-9p share the host attaches for -out, letting tests
+// hand files back. It must run after loadModules, which registers the 9p driver
+// and its transport. Best-effort: without -out the device is simply absent.
 func mountOut() {
 	if err := os.MkdirAll("/out", 0o755); err != nil {
 		log.Printf("mkdir /out: %v", err)

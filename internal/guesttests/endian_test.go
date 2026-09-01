@@ -15,9 +15,7 @@ var bigEndianArches = map[string]bool{
 }
 
 // TestNativeByteOrder asserts the running binary's native byte order matches its
-// build GOARCH. Under `qemu-test -arch s390x` / `-arch ppc64` the guest binary is
-// big-endian, so this exercises and proves the big-endian path end-to-end; on a
-// little-endian host (`go test ./...`, `-arch amd64`) it confirms little-endian.
+// build GOARCH, proving the big-endian path end-to-end under -arch s390x/ppc64.
 func TestNativeByteOrder(t *testing.T) {
 	var buf [2]byte
 	binary.NativeEndian.PutUint16(buf[:], 0x0102)

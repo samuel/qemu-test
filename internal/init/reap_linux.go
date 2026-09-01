@@ -8,21 +8,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// runReaped starts cmd and runs the test process to completion while also
-// performing PID 1's reaping duty: any process whose parent exits first is
-// reparented to init, and only init can reap it. It blocks in wait4(-1),
-// reaping the test process plus any such orphaned grandchildren, and returns the
-// test process's result the way exec.Cmd.Run does (nil on exit 0, else an
-// "exit status N" / "signal: X" error).
+// runReaped runs cmd to completion while performing PID 1's reaping duty: it
+// blocks in wait4(-1), reaping the test process plus any orphaned grandchildren
+// reparented to init, and returns the test process's result the way cmd.Run does.
 //
-// We own the wait loop instead of calling cmd.Wait() to do the waiting because a
-// generic reaper (wait4(-1)) and cmd.Wait() race to reap /tests, and whichever
-// lost would see ECHILD and misreport the result. Reaping ourselves keeps
-// orphan-reaping semantics working for tests that depend on them, without that
-// race. We still call cmd.Wait() afterwards — solely to drain the stdout/stderr
-// copier goroutines (exec.Cmd.Wait does this even when its own process wait fails
-// with ECHILD), so the full test output is flushed before main prints the
-// verdict; its returned error is the expected ECHILD and is ignored.
+// It owns the wait loop rather than letting cmd.Wait do the waiting because the
+// two would race to reap /tests and the loser would see ECHILD. cmd.Wait is still
+// called afterwards, solely to drain the output copier goroutines — which it does
+// even when its own wait fails — so the test output is flushed before the verdict.
 func runReaped(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
@@ -36,20 +29,17 @@ func runReaped(cmd *exec.Cmd) error {
 		case errors.Is(err, unix.EINTR):
 			continue // interrupted (e.g. the Go runtime's preemption signal); retry
 		case err != nil:
-			// ECHILD here would mean the test process vanished without us seeing it,
-			// which should not happen; surface it rather than spin.
+			// Includes ECHILD, which would mean /tests vanished unseen.
 			return fmt.Errorf("wait4: %w", err)
 		case wpid == pid:
 			_ = cmd.Wait() //nolint:errcheck // already reaped above; this only drains the output goroutines
 			return waitStatusErr(status)
 		}
-		// Else: reaped an orphaned grandchild — keep waiting for /tests.
+		// Otherwise an orphaned grandchild was reaped; keep waiting for /tests.
 	}
 }
 
-// waitStatusErr renders a child's wait status the way exec.Cmd.Run reports it:
-// nil for a clean exit 0, an "exit status N" error for a non-zero exit, and a
-// "signal: X" error for termination by a signal.
+// waitStatusErr renders a wait status the way exec.Cmd.Run reports it.
 func waitStatusErr(ws unix.WaitStatus) error {
 	switch {
 	case ws.Exited():

@@ -1,6 +1,5 @@
 // Package cli is the command layer for qemu-test: it parses flags, dispatches the
-// cache/bundle subcommands, assembles a runner.Options from the flags, and maps the
-// run result to a process exit code. The root main package is a thin shim over it.
+// cache/bundle subcommands, and maps the run result to a process exit code.
 package cli
 
 import (
@@ -21,15 +20,12 @@ import (
 	"github.com/samuel/qemu-test/internal/runner"
 )
 
-// Main is the program entry point. args is os.Args[1:]; embedFiles carries the
-// embedded init source compiled in the guest build (it must be declared in the
-// root package, where //go:embed can reach internal/init and go.mod/go.sum). It returns a
-// process exit code.
+// Main is the program entry point, returning a process exit code. embedFiles
+// carries the init source compiled into the guest build; it must be declared in
+// the root package, where //go:embed can reach internal/init and go.mod/go.sum.
 func Main(args []string, embedFiles embed.FS) int {
-	// Subcommands are dispatched on a bare first token. A flag (-x) or a package
-	// path (./pkg) can never equal a subcommand name, so the existing
-	// "qemu-test [flags] <package>" form is unaffected; a package literally named
-	// "cache"/"bundle" is still reachable as "./cache".
+	// Subcommands are dispatched on a bare first token, which a flag or a ./pkg
+	// path can never be; a package named "cache" is still reachable as "./cache".
 	if len(args) >= 1 {
 		switch args[0] {
 		case "cache":
@@ -65,7 +61,7 @@ func Main(args []string, embedFiles embed.FS) int {
 	flagKeep := fs.Bool("keep", false, "Keep the temp dir (initramfs, built init, qmp.sock) and log the full qemu command line instead of removing it on exit")
 	fs.Usage = func() { usage(fs) }
 	if err := fs.Parse(args); err != nil {
-		return 2 // ExitOnError exits before returning; this keeps the type checker happy
+		return 2 // unreachable: ExitOnError exits first
 	}
 
 	if *flagVerbose {
@@ -125,9 +121,8 @@ func Main(args []string, embedFiles embed.FS) int {
 	qemuArgs = append(qemuArgs, "-smp", strconv.Itoa(*flagSMP), "-m", *flagMem)
 
 	if *flagOut != "" {
-		// Share the host dir into the guest over virtio-9p. The guest mounts the
-		// "outshare" tag at /out (internal/init/mount_linux.go); mapped-xattr stores guest
-		// ownership in xattrs so the host process can still read what tests write.
+		// The guest mounts the "outshare" tag at /out. mapped-xattr keeps guest
+		// ownership in xattrs so the host can still read what tests write.
 		outPath, err := filepath.Abs(*flagOut)
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "Failed: resolve -out path: %s\n", err)
@@ -140,29 +135,21 @@ func Main(args []string, embedFiles embed.FS) int {
 		qemuArgs = append(qemuArgs,
 			"-fsdev", "local,id=out,path="+outPath+",security_model=mapped-xattr",
 			"-device", "virtio-9p-pci,fsdev=out,mount_tag=outshare")
-		// The default bundles build 9p as modules (only a bare kernel with
-		// CONFIG_9P_FS=y has it built in), so the guest cannot mount the share until
-		// the filesystem and the virtio transport are loaded. Request them here; the
-		// module resolver pulls in their dependency closure (9pnet, netfs) and
-		// harmlessly skips them where 9p is built in or the modules are absent.
+		// The default bundles build 9p as modules, so the share cannot mount until
+		// the filesystem and its virtio transport are loaded. The resolver pulls in
+		// their dependencies and skips them where 9p is built in.
 		moduleList = append(moduleList, "9p", "9pnet_virtio")
 	}
 
 	// BootArgs always attaches a virtio-rng device; load its driver so the guest
-	// entropy pool is actually fed (crypto/rand's getrandom can block early in boot
-	// before the CRNG is seeded). The Debian bundles build virtio_rng as a module;
-	// the resolver skips it where it is built in or the module is absent (e.g. a
-	// bare -kernel), so this is a harmless no-op there.
+	// entropy pool is actually fed. Skipped where it is built in.
 	moduleList = append(moduleList, "virtio_rng")
 
 	var testBuildArgs []string
 	if *flagTags != "" {
 		testBuildArgs = append(testBuildArgs, "-tags", *flagTags)
 	}
-	// Coverage needs a coverage-instrumented test binary, but the profile is
-	// written at runtime, so when a coverage runtime flag is forwarded build the
-	// test binary with -cover. Pairs with -out to extract the profile, e.g.
-	// -out ./cov ./pkg -test.coverprofile=/out/cover.out.
+	// Coverage runtime flags need an instrumented binary; pair with -out to get the profile back.
 	for _, ta := range testArgs {
 		if strings.HasPrefix(ta, "-test.coverprofile") || strings.HasPrefix(ta, "-test.covermode") {
 			testBuildArgs = append(testBuildArgs, "-cover")

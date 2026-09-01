@@ -19,8 +19,8 @@ func TestResolveKVM(t *testing.T) {
 		t.Error("ResolveKVM(bogus) = nil error, want error")
 	}
 
-	// auto on a guest arch that cannot match the host never enables (no KVM for
-	// cross-architecture emulation), independent of /dev/kvm.
+	// auto never enables for a guest arch that cannot match the host, whatever
+	// /dev/kvm says.
 	otherArch := "arm64"
 	if runtime.GOARCH == "arm64" {
 		otherArch = "amd64"
@@ -47,7 +47,7 @@ func TestTailSuffix(t *testing.T) {
 }
 
 func TestFirmwareDirs(t *testing.T) {
-	// The first candidate is derived from the binary: <prefix>/bin/X -> <prefix>/share/qemu.
+	// The first candidate derives from the binary: bin/X -> share/qemu.
 	got := firmwareDirs("/opt/homebrew/bin/qemu-system-loongarch64")
 	if len(got) == 0 || got[0] != "/opt/homebrew/share/qemu" {
 		t.Errorf("firmwareDirs[0] = %q, want /opt/homebrew/share/qemu", got[0])

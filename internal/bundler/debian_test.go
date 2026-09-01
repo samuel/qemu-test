@@ -111,9 +111,8 @@ func TestParsePackagesEmpty(t *testing.T) {
 	}
 }
 
-// debianServer serves a Debian-style repo: a binary-<arch> Packages index (named
-// by ext, e.g. ".xz") plus the pool .deb it points at. indexBody is the raw
-// (uncompressed) index; the handler is registered under the compressed name only.
+// debianServer serves a Debian-style repo: a binary-<arch> Packages index named
+// by ext plus the pool .deb it points at. indexBody is the uncompressed index.
 func debianServer(t *testing.T, arch, indexExt string, indexBody, deb []byte, debPoolPath string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -131,7 +130,7 @@ func debianServer(t *testing.T, arch, indexExt string, indexBody, deb []byte, de
 func TestBundleDebianEndToEnd(t *testing.T) {
 	const abi = "6.12.86+deb13"
 	debPool := "pool/main/l/linux/linux-image-" + abi + "-amd64-unsigned_6.12.86-1_amd64.deb"
-	// The .deb's data member holds the installed layout (./-prefixed, as dpkg ships).
+	// The data member holds the installed layout, ./-prefixed as dpkg ships it.
 	deb := debBytes(t, "data.tar.xz", xzBytes(t, tarBytes(t, false, map[string]string{
 		"./boot/vmlinuz-" + abi + "-amd64":                   "KERNEL-IMAGE",
 		"./usr/lib/modules/" + abi + "-amd64/modules.dep":    "deps",
@@ -146,7 +145,7 @@ func TestBundleDebianEndToEnd(t *testing.T) {
 		"",
 	}, "\n")
 
-	// Index only as .gz here, so the .xz fetch 404s and the .gz fallback is exercised.
+	// Only .gz here, so the .xz fetch 404s and the fallback is exercised.
 	srv := debianServer(t, "amd64", ".gz", maybeGzip(t, true, []byte(index)), deb, debPool)
 
 	cfg := &Config{Sources: []Source{{

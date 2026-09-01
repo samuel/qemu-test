@@ -20,13 +20,12 @@ const (
 	KindBundle = "bundle"
 )
 
-// BuiltBundleExt is the suffix of a boot bundle built locally from an arch's
-// bundleConfig (cached as <sha256(config)>.tgz). It distinguishes a built bundle
-// from a downloaded body (a bare sha256 key) when enumerating the cache.
+// BuiltBundleExt is the suffix of a locally built boot bundle, cached as
+// <sha256(config)>.tgz. It distinguishes one from a downloaded body when
+// enumerating the cache.
 const BuiltBundleExt = ".tgz"
 
-// IsHTTPURL reports whether s is an http(s) URL rather than a local filesystem
-// path, so -kernel and arch.kernelURL can accept either form.
+// IsHTTPURL reports whether s is an http(s) URL rather than a local path.
 func IsHTTPURL(s string) bool {
 	u, err := url.Parse(s)
 	if err != nil {
@@ -35,11 +34,9 @@ func IsHTTPURL(s string) bool {
 	return u.Scheme == "http" || u.Scheme == "https"
 }
 
-// CacheDir returns the persistent on-disk directory where downloaded kernels
-// and bundles are cached, creating it if needed. It honors QEMU_TEST_CACHE for an
-// explicit override (also the seam used by tests); otherwise it is
-// os.UserCacheDir()/qemu-test. It is only consulted when an artifact actually
-// needs fetching, so embedded/local-path runs never depend on a usable cache dir.
+// CacheDir returns the directory where downloaded kernels and bundles are
+// cached, creating it if needed. QEMU_TEST_CACHE overrides the default
+// os.UserCacheDir()/qemu-test. Only consulted when something needs fetching.
 func CacheDir() (string, error) {
 	dir := os.Getenv("QEMU_TEST_CACHE")
 	if dir == "" {
@@ -61,9 +58,8 @@ func CacheKey(rawURL string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Meta is the JSON sidecar stored next to a cached file. It records the
-// HTTP validators used for a conditional refresh plus integrity
-// and provenance info.
+// Meta is the JSON sidecar stored next to a cached file: the HTTP validators
+// used for a conditional refresh plus integrity and provenance info.
 type Meta struct {
 	URL          string `json:"url"`
 	ETag         string `json:"etag,omitempty"`
@@ -87,8 +83,7 @@ func LoadMeta(path string) (Meta, error) {
 }
 
 // writeFileAtomic writes b to path via a temp file in the same directory then
-// renames it into place, so a crash or a concurrent run never observes a partial
-// file. Rename within a directory is atomic on the local filesystems we target.
+// renames it into place, so no reader ever observes a partial file.
 func writeFileAtomic(path string, b []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -108,7 +103,7 @@ func writeFileAtomic(path string, b []byte) error {
 	return nil
 }
 
-// firstErr returns the first non-nil error, used to surface a write error in
+// firstErr returns the first non-nil error, surfacing a write error in
 // preference to a close error.
 func firstErr(a, b error) error {
 	if a != nil {
@@ -117,19 +112,17 @@ func firstErr(a, b error) error {
 	return b
 }
 
-// FetchKernel returns the on-disk path to the kernel at rawURL, downloading and
-// caching it under cacheDir on first use. See FetchToCache for the caching/refresh
-// semantics; a nil client uses http.DefaultClient and ctx governs cancellation.
+// FetchKernel returns the on-disk path to the kernel at rawURL. See FetchToCache
+// for the caching and refresh semantics; a nil client uses http.DefaultClient.
 func FetchKernel(ctx context.Context, client *http.Client, rawURL, cacheDir string, refresh bool) (string, error) {
 	return FetchToCache(ctx, client, rawURL, cacheDir, refresh, KindKernel)
 }
 
-// FetchToCache returns the on-disk path to the artifact at rawURL, downloading and
-// caching it under cacheDir on first use. A cached artifact is reused without any
-// network access unless refresh is set, in which case a conditional GET (using the
-// stored ETag/Last-Modified) re-downloads only when the remote has actually
-// changed. If the network is unreachable but a cached copy exists, that copy is
-// used. kind labels the artifact in log and error messages ("kernel", "bundle").
+// FetchToCache returns the on-disk path to the artifact at rawURL, downloading
+// and caching it under cacheDir on first use. A cached artifact is reused with no
+// network access unless refresh is set, which issues a conditional GET and
+// re-downloads only when the remote changed. An unreachable remote falls back to
+// the cached copy. kind labels the artifact in log and error messages.
 func FetchToCache(ctx context.Context, client *http.Client, rawURL, cacheDir string, refresh bool, kind string) (string, error) {
 	if client == nil {
 		client = http.DefaultClient
@@ -140,8 +133,6 @@ func FetchToCache(ctx context.Context, client *http.Client, rawURL, cacheDir str
 	_, statErr := os.Stat(bodyPath)
 	cached := statErr == nil
 
-	// Offline-first: a cached artifact is used as-is unless an explicit refresh was
-	// requested.
 	if cached && !refresh {
 		slog.Debug("using cached "+kind, "url", rawURL, "path", bodyPath)
 		return bodyPath, nil
@@ -151,8 +142,7 @@ func FetchToCache(ctx context.Context, client *http.Client, rawURL, cacheDir str
 	if err != nil {
 		return "", fmt.Errorf("%s request %q: %w", kind, rawURL, err)
 	}
-	// On refresh, send the stored validators so an unchanged remote answers 304 and
-	// we skip the re-download.
+	// Send the stored validators so an unchanged remote answers 304.
 	if cached {
 		if meta, err := LoadMeta(metaPath); err == nil {
 			if meta.ETag != "" {
@@ -184,7 +174,7 @@ func FetchToCache(ctx context.Context, client *http.Client, rawURL, cacheDir str
 		return "", fmt.Errorf("download %s %q: unexpected status %s", kind, rawURL, resp.Status)
 	}
 
-	// Stream to a temp file, hashing as we copy, then atomically rename into place.
+	// Stream to a temp file, hashing as we copy, then rename into place.
 	tmp, err := os.CreateTemp(cacheDir, "dl-*")
 	if err != nil {
 		return "", err
@@ -222,12 +212,9 @@ func FetchToCache(ctx context.Context, client *http.Client, rawURL, cacheDir str
 }
 
 // FetchBundle returns the path to the extracted boot-bundle directory for the
-// archive at rawURL. The archive is downloaded and cached like a kernel (see
-// FetchToCache), then extracted once into a sibling "<cache>.d" directory; later
-// runs reuse the extracted tree without re-extracting unless refresh forces a
-// re-download (and thus a re-extraction). Extraction is atomic: a fresh tree is
-// built in a temp dir and renamed into place, so a crash never leaves a partial
-// directory that looks complete.
+// archive at rawURL. The archive is downloaded and cached like a kernel, then
+// extracted once into a sibling "<cache>.d" directory that later runs reuse
+// unless refresh forces a re-download.
 func FetchBundle(ctx context.Context, client *http.Client, rawURL, cacheDir string, refresh bool) (string, error) {
 	archivePath, err := FetchToCache(ctx, client, rawURL, cacheDir, refresh, KindBundle)
 	if err != nil {

@@ -16,11 +16,9 @@ type Config struct {
 	Sources []Source `json:"sources"`
 }
 
-// Source describes one input to a bundle build. A plain Source downloads a
-// single file to Dst; an archive Source downloads an archive and selects files
-// from it via Files (glob -> destination). The download location is either an
-// explicit URL or a Debian package resolved from a repository index (exactly one
-// of the two). It is the JSON config element.
+// Source describes one input to a bundle build: a plain source downloads a
+// single file to Dst, an archive source selects files from it via Files. The
+// download location is either an explicit URL or a Debian package, not both.
 type Source struct {
 	URL     string            `json:"url,omitempty"`
 	Debian  *DebianRef        `json:"debian,omitempty"` // resolve URL from a Debian Packages index
@@ -30,24 +28,20 @@ type Source struct {
 }
 
 // DebianRef resolves a source URL from a Debian repository's "Packages" index
-// instead of pinning a kernel version in the config, so a bundle tracks the
-// suite's latest point release automatically (picked up on -refresh). The current
-// kernel ABI is read from the meta-package Via's dependency named by AbiDep (a
-// package-name template with an {abi} placeholder), then substituted into Package
-// to locate the target stanza, whose Filename gives the download path under
-// Mirror. See resolveDebianURL.
+// rather than pinning a kernel version, so a bundle tracks the suite's latest
+// point release. See resolveDebianURL.
 type DebianRef struct {
 	Mirror    string `json:"mirror"`    // repository root, e.g. https://deb.debian.org/debian
 	Suite     string `json:"suite"`     // release suite, e.g. trixie or unstable
 	Component string `json:"component"` // archive component, e.g. main
 	Arch      string `json:"arch"`      // Debian architecture, e.g. amd64, arm64, ppc64
-	Via       string `json:"via"`       // meta-package whose Depends names the current ABI, e.g. linux-image-amd64
-	AbiDep    string `json:"abiDep"`    // dependency template with an {abi} placeholder, e.g. linux-image-{abi}-amd64
-	Package   string `json:"package"`   // target package template, {abi} substituted, e.g. linux-image-{abi}-amd64-unsigned
+	Via       string `json:"via"`       // meta-package whose Depends names the current ABI
+	AbiDep    string `json:"abiDep"`    // dependency template, e.g. linux-image-{abi}-amd64
+	Package   string `json:"package"`   // target package template, {abi} substituted
 }
 
-// label returns a human-readable identifier for the source, used in error and log
-// messages; a Debian source has no URL until it is resolved.
+// label identifies the source in error and log messages; a Debian source has no
+// URL until it is resolved.
 func (s Source) label() string {
 	switch {
 	case s.URL != "":

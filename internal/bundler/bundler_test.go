@@ -111,8 +111,7 @@ func TestRunEndToEnd(t *testing.T) {
 }
 
 func TestRunAnchoredModules(t *testing.T) {
-	// A "." keep-anchor drops the variable version dir, producing a clean modules/
-	// tree (modules/modules.dep, modules/kernel/...).
+	// A "." keep-anchor drops the variable version dir, leaving a clean modules/.
 	initrd := cpioBytes(t, true,
 		regRec("usr/lib/modules/6.12.86+deb13-armmp/modules.dep", "deps"),
 		regRec("usr/lib/modules/6.12.86+deb13-armmp/kernel/net/e1000.ko", "ko"),

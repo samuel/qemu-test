@@ -11,26 +11,24 @@ import (
 
 // Extra Kind values reported by List, beyond KindKernel/KindBundle.
 const (
-	KindBuilt    = "built"    // a bundle built locally from an arch bundleConfig (<key>.tgz)
-	KindDownload = "download" // a downloaded body with no extraction dir (a bare kernel or a bundler source)
-	KindOrphan   = "orphan"   // a sidecar or extraction with no body (a reclaimable leftover)
+	KindBuilt    = "built"    // a bundle built locally from an arch's BundleConfig
+	KindDownload = "download" // a downloaded body with no extraction dir
+	KindOrphan   = "orphan"   // a sidecar or extraction with no body
 )
 
 // Entry is one logical cached artifact, grouping the files that share a cache
 // key: a downloaded body with its .json sidecar and optional .d extraction dir,
-// or a locally built bundle (.tgz). Paths holds every file the entry owns so it
-// can be removed wholesale.
+// or a locally built bundle (.tgz).
 type Entry struct {
-	Key       string    // 64-hex sha256 of the source URL, or of a built bundle's config
+	Key       string    // sha256 of the source URL, or of a built bundle's config
 	URL       string    // source URL from the sidecar; "" for built bundles and orphans
 	Kind      string    // KindBundle | KindBuilt | KindDownload | KindOrphan
 	FetchedAt time.Time // from the sidecar; zero when unknown
-	Size      int64     // total on-disk bytes (body + sidecar + extraction dir or tgz)
-	Paths     []string  // absolute paths owned by this entry, for removal
+	Size      int64     // total on-disk bytes
+	Paths     []string  // every path the entry owns, so it can be removed wholesale
 }
 
-// acc accumulates the files seen for one cache key before they are reduced to an
-// Entry.
+// acc accumulates the files seen for one cache key before reduction to an Entry.
 type acc struct {
 	hasBody    bool
 	hasExtract bool
@@ -40,10 +38,9 @@ type acc struct {
 	metaPath   string
 }
 
-// List enumerates the cached artifacts under cacheDir, grouping the flat layout's
-// files (bodies, .json sidecars, .d extraction dirs, .tgz built bundles) by their
-// shared cache key. Transient temp files left by an interrupted download, write,
-// or extraction are ignored. A missing cacheDir yields no entries. The result is
+// List enumerates the cached artifacts under cacheDir, grouping bodies, sidecars,
+// extraction dirs, and built bundles by their shared cache key. Transient temp
+// files are ignored, a missing cacheDir yields no entries, and the result is
 // sorted newest-fetched first.
 func List(cacheDir string) ([]Entry, error) {
 	des, err := os.ReadDir(cacheDir)
@@ -110,10 +107,8 @@ func List(cacheDir string) ([]Entry, error) {
 }
 
 // Clear removes cached artifacts under cacheDir and reports what was freed. With
-// no keys it empties the cache (every entry plus any transient temp leftovers),
-// keeping the directory itself; CacheDir recreates it lazily. With keys it removes
-// only entries whose Key matches one of them. A missing path is not an error (a
-// concurrent refresh may have moved on).
+// no keys it empties the cache, transient leftovers included, keeping the
+// directory itself; with keys it removes only the entries they name.
 func Clear(cacheDir string, keys ...string) (removed []Entry, freed int64, err error) {
 	entries, err := List(cacheDir)
 	if err != nil {
@@ -146,8 +141,8 @@ func Clear(cacheDir string, keys ...string) (removed []Entry, freed int64, err e
 	return removed, freed, nil
 }
 
-// classify reduces a cache directory entry name to its base key and role, or an
-// empty role when the name does not belong to a known artifact.
+// classify reduces a directory entry name to its cache key and role, or an empty
+// role when it belongs to no known artifact.
 func classify(name string, isDir bool) (key, role string) {
 	switch {
 	case strings.HasSuffix(name, ".json"):
@@ -163,9 +158,7 @@ func classify(name string, isDir bool) (key, role string) {
 	}
 }
 
-// kindOf labels an accumulated entry. A .tgz is a locally built bundle; a body
-// with an extraction dir is a downloaded bundle; a body alone is a bare download
-// (kernel or bundler source); anything without a body is a reclaimable leftover.
+// kindOf labels an accumulated entry.
 func kindOf(a *acc) string {
 	switch {
 	case a.hasTGZ:
@@ -179,8 +172,8 @@ func kindOf(a *acc) string {
 	}
 }
 
-// isTransient reports whether name is a temp file/dir left by an in-flight
-// download (dl-*), atomic write (*.tmp-*), or extraction (extract-*).
+// isTransient reports whether name is a temp file left by an in-flight download,
+// atomic write, or extraction.
 func isTransient(name string) bool {
 	return strings.HasPrefix(name, "dl-") ||
 		strings.HasPrefix(name, "extract-") ||
@@ -207,8 +200,7 @@ func sweepTransient(cacheDir string) error {
 	return nil
 }
 
-// isHexKey reports whether s is a 64-character lowercase hex string, the form
-// CacheKey produces.
+// isHexKey reports whether s has the form CacheKey produces.
 func isHexKey(s string) bool {
 	if len(s) != 64 {
 		return false
@@ -221,8 +213,7 @@ func isHexKey(s string) bool {
 	return true
 }
 
-// fileSize returns the size of the regular file at path, or 0 if it cannot be
-// stat'd.
+// fileSize returns the size of the file at path, or 0 if it cannot be stat'd.
 func fileSize(path string) int64 {
 	info, err := os.Stat(path)
 	if err != nil {

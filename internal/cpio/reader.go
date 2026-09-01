@@ -9,26 +9,25 @@ import (
 	"io"
 )
 
-// trailerName marks the end of a cpio archive. Writer.Close emits one and
-// ReadRecord stops at it, the standard newc end-of-archive marker.
+// trailerName is the standard newc end-of-archive marker. Writer.Close emits one
+// and ReadRecord stops at it.
 const trailerName = "TRAILER!!!"
 
-// NewReader returns a Reader that decodes newc cpio records from r. It is the
-// inverse of Writer.
+// NewReader returns a Reader decoding newc cpio records from r, the inverse of
+// Writer.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{r: r}
 }
 
-// Reader decodes newc cpio records. It mirrors Writer: read advances pos and
-// pad realigns it, so padding follows the same absolute-stream-position scheme
-// the Writer uses.
+// Reader decodes newc cpio records, padding on the same absolute-stream-position
+// scheme the Writer uses.
 type Reader struct {
 	r   io.Reader
 	pos int64
 }
 
-// read fills b from the stream and advances pos. Because a record is in flight,
-// any EOF before b is full is reported as io.ErrUnexpectedEOF.
+// read fills b and advances pos. A record is in flight, so an EOF before b is
+// full is reported as io.ErrUnexpectedEOF.
 func (r *Reader) read(b []byte) error {
 	n, err := io.ReadFull(r.r, b)
 	r.pos += int64(n)
@@ -38,8 +37,7 @@ func (r *Reader) read(b []byte) error {
 	return err
 }
 
-// pad discards bytes up to the next 4-byte boundary of the stream position,
-// mirroring Writer.pad.
+// pad discards bytes up to the next 4-byte boundary, mirroring Writer.pad.
 func (r *Reader) pad() error {
 	o := round4(r.pos)
 	if o == r.pos {
@@ -77,8 +75,7 @@ func (r *Reader) ReadRecord() (Record, error) {
 }
 
 // readHeader reads a record's magic and fixed-size header. Unlike the other
-// reads it tolerates a clean EOF: an empty read at a record boundary means the
-// archive is exhausted, which it reports as io.EOF.
+// reads it tolerates a clean EOF, reporting an exhausted archive as io.EOF.
 func (r *Reader) readHeader() (header, error) {
 	buf := make([]byte, len(magic))
 	n, err := io.ReadFull(r.r, buf)
@@ -93,8 +90,7 @@ func (r *Reader) readHeader() (header, error) {
 		return header{}, fmt.Errorf("cpio: bad magic %q", buf)
 	}
 
-	// The header is binary.Write'd then hex-encoded and upper-cased by the
-	// Writer; reverse that exactly. hex.Decode accepts the upper-case digits.
+	// The Writer encodes the header as upper-case hex; hex.Decode accepts those digits.
 	size := binary.Size(header{})
 	hexBuf := make([]byte, hex.EncodedLen(size))
 	if err := r.read(hexBuf); err != nil {
@@ -112,7 +108,7 @@ func (r *Reader) readHeader() (header, error) {
 }
 
 // readName reads the NUL-terminated record name (nameLen counts the NUL) and
-// then discards the header+name alignment padding.
+// discards the header+name alignment padding.
 func (r *Reader) readName(nameLen uint32) (string, error) {
 	if nameLen == 0 {
 		return "", errors.New("cpio: zero-length name")
@@ -127,8 +123,8 @@ func (r *Reader) readName(nameLen uint32) (string, error) {
 	return string(name[:nameLen-1]), nil
 }
 
-// readContent reads size bytes of file data and then discards the trailing
-// alignment padding, which the Writer emits only when size > 0.
+// readContent reads size bytes of file data and discards the trailing alignment
+// padding, which the Writer emits only when size > 0.
 func (r *Reader) readContent(size uint32) ([]byte, error) {
 	if size == 0 {
 		return nil, nil
@@ -159,9 +155,8 @@ func ReadAll(src io.Reader) ([]Record, error) {
 	}
 }
 
-// infoFromHeader is the inverse of headerFromInfo: it copies the numeric
-// metadata fields, dropping NameLength (consumed while reading the name) and CRC
-// (always 0). Name is filled in by the caller.
+// infoFromHeader is the inverse of headerFromInfo, dropping NameLength (consumed
+// while reading the name) and CRC (always 0). The caller fills in Name.
 func infoFromHeader(h header) Info {
 	return Info{
 		Ino:      h.Ino,

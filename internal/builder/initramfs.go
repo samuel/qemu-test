@@ -14,16 +14,14 @@ import (
 	"github.com/samuel/qemu-test/internal/cpio"
 )
 
-// Target is the cross-compilation target for the guest binaries. The same Target
-// is used for both the init and the test binary, since they run in one VM and
-// must share an architecture.
+// Target is the cross-compilation target for the guest binaries. Init and the
+// test binary share one, since they run in the same VM.
 type Target struct {
 	GOOS   string
 	GOARCH string
 }
 
-// env returns the process environment for cross-compiling to the target with cgo
-// disabled.
+// env returns the process environment for cross-compiling with cgo disabled.
 func (t Target) env() []string {
 	return append(os.Environ(), "CGO_ENABLED=0", "GOOS="+t.GOOS, "GOARCH="+t.GOARCH)
 }
@@ -76,9 +74,8 @@ func GoBuildTest(ctx context.Context, out io.Writer, target Target, srcPath stri
 	return nil
 }
 
-// SizeFromReader attempts to get the size of data represented by the reader.
-// The reader may be rewound to the beginning if seekable. If there's no
-// way to get the size without reading then an error is returned.
+// SizeFromReader returns the size of the reader's data, rewinding it if it is
+// seekable. It errors when the size cannot be had without reading.
 func SizeFromReader(r io.Reader) (int64, error) {
 	if ln, ok := r.(interface{ Len() int }); ok {
 		return int64(ln.Len()), nil
@@ -123,10 +120,8 @@ func SizesFromReaders(files map[string]io.Reader) (map[string]int64, error) {
 }
 
 func BuildInitramfs(out io.Writer, files map[string]io.Reader, fileSizes map[string]int64) error {
-	// Normalize into a fresh map rather than mutating the caller's: this also
-	// keeps the reader and its size keyed by the same (normalized) name, and lets
-	// us reject a collision (two inputs normalizing to one name) instead of
-	// silently dropping a file.
+	// Normalize into a fresh map rather than mutating the caller's, keying reader
+	// and size alike, and rejecting a collision instead of dropping a file.
 	type entry struct {
 		reader io.Reader
 		size   int64
@@ -140,7 +135,6 @@ func BuildInitramfs(out io.Writer, files map[string]io.Reader, fileSizes map[str
 		norm[n] = entry{reader: f, size: fileSizes[name]}
 	}
 
-	// Provide a stable order for names.
 	names := make([]string, 0, len(norm))
 	for name := range norm {
 		names = append(names, name)
@@ -148,7 +142,7 @@ func BuildInitramfs(out io.Writer, files map[string]io.Reader, fileSizes map[str
 	slices.Sort(names)
 
 	recWriter := cpio.NewWriter(out)
-	//nolint:errcheck // After success build the writer is closed and error is checked. This covers the failure paths.
+	//nolint:errcheck // On success Close's trailer write is checked by the return below; this close only covers error paths.
 	defer recWriter.Close()
 
 	for i, name := range names {

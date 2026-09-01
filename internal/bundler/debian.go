@@ -15,12 +15,10 @@ import (
 	"github.com/samuel/qemu-test/internal/cache"
 )
 
-// resolveDebianURL resolves a DebianRef to a concrete .deb download URL by reading
-// the repository's "Packages" index. It follows the meta-package (Via) to discover
-// the current kernel ABI, substitutes that ABI into the target Package name, and
-// returns mirror+"/"+Filename for that package's stanza — so the bundle tracks the
-// suite's latest point release without a version pinned in the config. The index
-// download is cached (offline-first; refresh re-validates it) like any source.
+// resolveDebianURL resolves a DebianRef to a concrete .deb URL: it follows the
+// meta-package (Via) to discover the current kernel ABI, substitutes that into
+// the target Package name, and returns mirror+Filename for that stanza. The index
+// download is cached like any other source.
 func resolveDebianURL(ctx context.Context, client *http.Client, ref *DebianRef, cacheDir string, refresh bool) (string, error) {
 	raw, err := fetchPackagesIndex(ctx, client, ref, cacheDir, refresh)
 	if err != nil {
@@ -52,9 +50,8 @@ func resolveDebianURL(ctx context.Context, client *http.Client, ref *DebianRef, 
 	return resolved, nil
 }
 
-// fetchPackagesIndex downloads and decompresses the binary-<arch> "Packages" index
-// for the ref's suite/component. Debian ships the index as both .xz and .gz; .xz is
-// tried first and .gz used as a fallback.
+// fetchPackagesIndex downloads and decompresses the binary-<arch> "Packages"
+// index for the ref's suite/component, trying .xz then falling back to .gz.
 func fetchPackagesIndex(ctx context.Context, client *http.Client, ref *DebianRef, cacheDir string, refresh bool) ([]byte, error) {
 	base := fmt.Sprintf("%s/dists/%s/%s/binary-%s/Packages",
 		strings.TrimRight(ref.Mirror, "/"), ref.Suite, ref.Component, ref.Arch)
@@ -74,9 +71,8 @@ func fetchPackagesIndex(ctx context.Context, client *http.Client, ref *DebianRef
 	return nil, fmt.Errorf("fetch package index %s: %w", base+".xz", lastErr)
 }
 
-// readMaybeCompressed reads the file at path, transparently decompressing a
-// gzip/xz/zstd stream (the index is compressed, but the decompressor passes a
-// plain stream through unchanged).
+// readMaybeCompressed reads the file at path, decompressing a gzip/xz/zstd
+// stream and passing a plain one through unchanged.
 func readMaybeCompressed(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -93,9 +89,9 @@ func readMaybeCompressed(path string) ([]byte, error) {
 	return io.ReadAll(src)
 }
 
-// parsePackages parses a Debian "Packages" index into a map keyed by package name,
-// each value mapping field name to value. Stanzas are separated by blank lines; a
-// line beginning with whitespace continues the previous field's value.
+// parsePackages parses a Debian "Packages" index into package name → fields.
+// Stanzas are blank-line separated; a line starting with whitespace continues the
+// previous field.
 func parsePackages(raw []byte) (map[string]map[string]string, error) {
 	pkgs := make(map[string]map[string]string)
 	cur := map[string]string{}
@@ -108,7 +104,7 @@ func parsePackages(raw []byte) (map[string]map[string]string, error) {
 		lastField = ""
 	}
 	sc := bufio.NewScanner(bytes.NewReader(raw))
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // some stanzas (long Depends) exceed the default 64K line cap
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // long Depends lines exceed the default 64K cap
 	for sc.Scan() {
 		line := sc.Text()
 		switch {
@@ -136,10 +132,9 @@ func parsePackages(raw []byte) (map[string]map[string]string, error) {
 	return pkgs, nil
 }
 
-// extractABI finds, among a meta-package's comma-separated Depends, the dependency
-// matching abiDep (a package-name template with a single {abi} placeholder) and
-// returns the substring captured by {abi}. The version constraint "(...)" and any
-// "pkg | alt" alternatives are ignored (the first alternative's name is used).
+// extractABI finds the dependency matching abiDep among a meta-package's Depends
+// and returns the substring captured by {abi}. Version constraints are ignored,
+// and only the first of a "pkg | alt" alternative is considered.
 func extractABI(depends, abiDep string) (string, error) {
 	prefix, suffix, ok := strings.Cut(abiDep, abiPlaceholder)
 	if !ok {

@@ -19,8 +19,7 @@ import (
 )
 
 // fakeKernelServer serves a kernel body with an optional ETag, honors
-// If-None-Match for conditional refresh, and counts the requests it actually
-// handles so tests can assert the offline-first path skips the network.
+// If-None-Match, and counts handled requests so tests can assert no network use.
 type fakeKernelServer struct {
 	mu   sync.Mutex
 	body []byte
@@ -220,7 +219,7 @@ func TestResolveBootEnvLocalKernel(t *testing.T) {
 	if env.KernelPath != kf {
 		t.Fatalf("KernelPath = %q, want %q", env.KernelPath, kf)
 	}
-	if env.ModulesDir != "" || env.DTBPath != "" {
+	if env.ModulesPath != "" || env.DTBPath != "" {
 		t.Fatalf("bare -kernel should carry no modules/dtb, got %+v", env)
 	}
 
@@ -254,8 +253,8 @@ func TestResolveBootEnvNoKernel(t *testing.T) {
 }
 
 func TestResolveBootEnvBuiltBundle(t *testing.T) {
-	// An arch with a BundleConfig builds a bundle from upstream sources and then
-	// uses it like a downloaded bundle: the kernel and modules tree resolve.
+	// A BundleConfig is built from upstream sources and then used like a
+	// downloaded bundle.
 	var hits atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/vmlinuz", func(w http.ResponseWriter, _ *http.Request) {
@@ -282,12 +281,11 @@ func TestResolveBootEnvBuiltBundle(t *testing.T) {
 	if data := readFile(t, env.KernelPath); !bytes.Equal(data, []byte("KERNEL-IMAGE")) {
 		t.Fatalf("built bundle kernel = %q, want %q", data, "KERNEL-IMAGE")
 	}
-	if filepath.Base(env.ModulesDir) != "modules" {
-		t.Fatalf("built bundle ModulesDir = %q, want a 'modules' tree", env.ModulesDir)
+	if filepath.Base(env.ModulesPath) != "modules" {
+		t.Fatalf("built bundle ModulesDir = %q, want a 'modules' tree", env.ModulesPath)
 	}
 
-	// A second run reuses the cached build (the .tgz is keyed by config) and the
-	// bundler's cached sources, so it makes no further network requests.
+	// A second run reuses the cached build and sources, hitting no network.
 	srcHits := hits.Load()
 	if _, err := Resolve(context.Background(), Options{Arch: a, WorkDir: t.TempDir()}); err != nil {
 		t.Fatalf("Resolve (reuse): %v", err)

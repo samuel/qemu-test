@@ -7,8 +7,8 @@ import (
 )
 
 func TestWaitStatusErr(t *testing.T) {
-	// WaitStatus bit layout (Linux): low 7 bits are the signal (0 => exited),
-	// and for an exit the code is in bits 8..15.
+	// WaitStatus layout: low 7 bits are the signal (0 => exited), bits 8..15 the
+	// exit code.
 	tests := []struct {
 		name   string
 		ws     unix.WaitStatus

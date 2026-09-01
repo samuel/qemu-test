@@ -1,7 +1,6 @@
 // Package boot resolves what to boot — the kernel plus, when a bundle supplies
 // them, a matching modules tree and device tree — from the arch defaults and the
-// -kernel/-bundle overrides. URL kernels/bundles are downloaded once and cached;
-// a bundleConfig is built locally with the bundler and cached by config hash.
+// -kernel/-bundle overrides.
 package boot
 
 import (
@@ -20,31 +19,25 @@ import (
 	"github.com/samuel/qemu-test/internal/modules"
 )
 
-// Env is the resolved set of host artifacts needed to boot a guest: the kernel
-// plus, when a bundle supplies them, a matching modules tree and a device tree.
+// Env is the resolved set of host artifacts needed to boot a guest.
 type Env struct {
-	KernelPath string
-	ModulesDir string // path to the modules tree (contains modules.dep), or "" if none
-	DTBPath    string // device tree to pass via -dtb, or "" if none
+	KernelPath  string
+	ModulesPath string // modules tree, or "" if none
+	DTBPath     string // device tree to pass via -dtb, or "" if none
 }
 
-// Options carries the inputs Resolve needs: the target arch, the -kernel/-bundle
-// overrides, whether to re-validate URL sources (-refresh), and a work dir that
-// receives a local tarball bundle's extracted tree.
+// Options carries the inputs Resolve needs.
 type Options struct {
 	Arch           arch.Arch
 	KernelOverride string // -kernel path or URL (bare kernel)
-	BundleOverride string // -bundle path or URL (boot bundle: kernel + modules + dtb)
+	BundleOverride string // -bundle path or URL (kernel + modules + dtb)
 	Refresh        bool   // re-validate a URL kernel or bundle against the remote
 	WorkDir        string // temp dir to extract a local tarball bundle into
 }
 
 // Resolve resolves what to boot. Precedence: a -bundle override → a -kernel
-// override (bare kernel) → the arch's BundleConfig (built locally) → the arch's
-// BundleURL → the arch's KernelURL (bare kernel) → error. -bundle and -kernel are
-// mutually exclusive (rejected earlier). URL kernels/bundles are downloaded once
-// and cached; refresh re-validates them. o.WorkDir receives a local tarball
-// bundle's extracted tree.
+// override → the arch's BundleConfig (built locally) → its BundleURL → its
+// KernelURL → error. URL kernels and bundles are downloaded once and cached.
 func Resolve(ctx context.Context, o Options) (Env, error) {
 	a := o.Arch
 	switch {
@@ -65,12 +58,10 @@ func Resolve(ctx context.Context, o Options) (Env, error) {
 	}
 }
 
-// resolveBuiltBundle builds the arch's BundleConfig into a boot bundle with the
-// bundler package, then resolves it exactly like a downloaded bundle. The bundle is
-// deterministic, so it is cached by a hash of its config (a config change rebuilds)
-// to skip the build's heavy work — fetching the upstream sources and selecting files
-// out of them — on later runs; the bundler caches the source downloads themselves.
-// -refresh re-validates those sources against the remote and rebuilds.
+// resolveBuiltBundle builds the arch's BundleConfig into a boot bundle, then
+// resolves it like a downloaded one. The build is deterministic, so it is cached
+// by a hash of its config: a config change rebuilds, and refresh re-validates the
+// upstream sources and rebuilds.
 func resolveBuiltBundle(ctx context.Context, a arch.Arch, refresh bool, workDir string) (Env, error) {
 	cacheDir, err := cache.CacheDir()
 	if err != nil {
@@ -88,13 +79,11 @@ func resolveBuiltBundle(ctx context.Context, a arch.Arch, refresh bool, workDir 
 	} else {
 		slog.Debug("using cached built bundle", "arch", a.Name, "path", builtPath)
 	}
-	// From here the built bundle is used exactly like a downloaded one: extracted
-	// into the work dir and resolved into its kernel/modules/dtb paths.
 	return resolveBundle(ctx, a, builtPath, refresh, workDir)
 }
 
-// resolveBareKernel resolves a single kernel source (a local path or an http(s)
-// URL) to a host path, fetching + caching URL kernels.
+// resolveBareKernel resolves a local path or http(s) URL to a host path,
+// fetching and caching URL kernels.
 func resolveBareKernel(ctx context.Context, src string, refresh bool) (string, error) {
 	if !cache.IsHTTPURL(src) {
 		path, err := filepath.Abs(src)
@@ -113,9 +102,9 @@ func resolveBareKernel(ctx context.Context, src string, refresh bool) (string, e
 	return cache.FetchKernel(ctx, nil, src, cacheDir, refresh)
 }
 
-// resolveBundle resolves a boot bundle from src — an http(s) URL (fetched, cached,
-// and extracted), a local tarball (extracted into workDir), or a local directory
-// (used in place) — into the kernel/modules/dtb paths it carries.
+// resolveBundle resolves a boot bundle from src — an http(s) URL (fetched,
+// cached, extracted), a local tarball (extracted into workDir), or a local
+// directory — into the kernel/modules/dtb paths it carries.
 func resolveBundle(ctx context.Context, a arch.Arch, src string, refresh bool, workDir string) (Env, error) {
 	var dir string
 	if cache.IsHTTPURL(src) {
@@ -148,8 +137,8 @@ func resolveBundle(ctx context.Context, a arch.Arch, src string, refresh bool, w
 	return bundleEnv(a, dir)
 }
 
-// bundleEnv resolves the kernel/modules/dtb paths inside an extracted bundle
-// directory, defaulting to the layout convention and honoring any arch overrides.
+// bundleEnv resolves the kernel/modules/dtb paths inside an extracted bundle,
+// defaulting to the layout convention and honoring any arch overrides.
 func bundleEnv(a arch.Arch, dir string) (Env, error) {
 	kernelRel := a.BundleKernelPath
 	if kernelRel == "" {
@@ -170,14 +159,12 @@ func bundleEnv(a arch.Arch, dir string) (Env, error) {
 			return Env{}, fmt.Errorf("bundle dtb %q: %w", a.BundleDTBPath, err)
 		}
 	}
-	return Env{KernelPath: kernelPath, ModulesDir: modulesDir, DTBPath: dtbPath}, nil
+	return Env{KernelPath: kernelPath, ModulesPath: modulesDir, DTBPath: dtbPath}, nil
 }
 
-// bundleModulesDir locates the modules tree inside a bundle: the arch override if
-// set, else "modules/", else the sole "lib/modules/<release>/". A tree is detected
-// by modules.dep or any .ko file (isModuleTree), so trees that ship only modules
-// (no depmod output) still count. It returns "" (and no error) when the bundle
-// carries no modules tree (a bare kernel; modules built in).
+// bundleModulesDir locates the modules tree inside a bundle: the arch override
+// if set, else "modules/", else the sole "lib/modules/<release>/". It returns ""
+// and no error when the bundle carries no modules tree.
 func bundleModulesDir(a arch.Arch, dir string) (string, error) {
 	if a.BundleModulesPath != "" {
 		md := filepath.Join(dir, a.BundleModulesPath)
@@ -209,9 +196,8 @@ func bundleModulesDir(a arch.Arch, dir string) (string, error) {
 	}
 }
 
-// isModuleTree reports whether dir looks like a kernel modules tree: it has a
-// modules.dep (text or .bin), or contains at least one .ko file (so a tree that
-// ships only modules — e.g. an extracted netboot initrd — is recognized too).
+// isModuleTree reports whether dir has a modules.dep or at least one .ko file,
+// so a tree shipping only modules (e.g. an extracted netboot initrd) counts.
 func isModuleTree(dir string) bool {
 	if modules.HasModulesDep(dir) {
 		return true
@@ -219,7 +205,7 @@ func isModuleTree(dir string) bool {
 	var found bool
 	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // a walk error just means we didn't find a .ko here
+			return nil // an unreadable entry just means no .ko here
 		}
 		if !d.IsDir() && modules.IsKoFile(d.Name()) {
 			found = true

@@ -23,8 +23,7 @@ func (f *MultiStringFlag) Set(value string) error {
 	return nil
 }
 
-// usage prints the help/usage message for the main command. It is wired in as
-// fs.Usage, so it is also shown for -h/-help and on flag parse errors.
+// usage prints the help message for the main command.
 func usage(fs *flag.FlagSet) {
 	out := fs.Output()
 	_, _ = fmt.Fprint(out, `qemu-test runs a Go package's tests inside a freshly-booted QEMU VM.
@@ -58,12 +57,9 @@ Examples:
 `)
 }
 
-// parseRawQemuArgs converts each -qemu.arg value into the argv tokens qemu
-// expects. Each value is split on its first whitespace so a single quoted flag
-// like "-drive if=none,id=d0,..." reaches qemu as the two tokens
-// ["-drive", "if=none,id=d0,..."]; the value keeps any later whitespace. Values
-// with no whitespace pass through as a single token, and blank entries are
-// skipped.
+// parseRawQemuArgs converts each -qemu.arg value into qemu argv tokens, splitting
+// on the first whitespace so "-drive if=none,..." becomes two tokens. Any later
+// whitespace stays in the value.
 func parseRawQemuArgs(raw []string) []string {
 	var args []string
 	for _, a := range raw {

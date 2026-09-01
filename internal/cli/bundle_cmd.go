@@ -12,10 +12,9 @@ import (
 	"github.com/samuel/qemu-test/internal/bundler"
 )
 
-// bundleCommand implements "qemu-test bundle" — assembling a boot bundle (.tgz)
-// from remote files and archives described by a JSON config, laid out the way the
-// -bundle flag expects (vmlinuz plus a modules tree). It returns a process exit
-// code (0 success, 1 build failure, 2 usage error).
+// bundleCommand implements "qemu-test bundle": it assembles a boot bundle (.tgz)
+// from the sources a JSON config names, laid out the way -bundle expects. Returns
+// a process exit code (0 success, 1 build failure, 2 usage error).
 func bundleCommand(args []string) int {
 	fs := flag.NewFlagSet("qemu-test bundle", flag.ContinueOnError)
 	flagConfig := fs.String("config", "", "Path to the JSON bundle config")

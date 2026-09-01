@@ -1,7 +1,6 @@
-// Package modules is the host-side kernel-module resolver. Given a bundle's
-// modules tree and a list of requested module names, it computes each module's
-// dependency closure in load order and returns the .ko files to pack into the
-// initramfs, mirroring modprobe's "load if available" behavior.
+// Package modules is the host-side kernel-module resolver: given a modules tree
+// and requested module names it returns the .ko files to pack into the initramfs,
+// in dependency order.
 package modules
 
 import (
@@ -22,25 +21,19 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// Module is a kernel module to pack into the initramfs and load in the guest, in
-// dependency order (dependencies before dependents).
+// Module is a kernel module to pack into the initramfs and load in the guest.
 type Module struct {
-	Name       string // canonical module name (underscores), for logging
+	Name       string // canonical module name (underscores)
 	HostPath   string // absolute path to the .ko on the host
 	Base       string // file base name, e.g. "xhci-pci.ko" or "xhci-pci.ko.xz"
-	Compressed bool   // Base is a compressed .ko (.gz/.xz/.zst) needing kernel-side decompression
+	Compressed bool   // needs kernel-side decompression (.gz/.xz/.zst)
 }
 
 // Resolve turns the requested module names into the ordered set of .ko files to
-// load, sourced from the bundle's modules tree at modulesDir. It mirrors
-// modprobe's "load if available" behavior: a requested module that has a matching
-// .ko is loaded together with its dependency closure (dependencies first); one
-// that is absent from the tree is presumed built into the kernel (or simply
-// unavailable) and returned in skipped rather than failing. modulesDir == ""
-// (a bare kernel with no modules tree) presumes every request is built in.
-//
-// Dependencies come from modules.dep when present, else from each module's ELF
-// .modinfo (see buildModuleGraph), so a tree that ships only .ko files still works.
+// load from the modules tree at modulesDir. It mirrors modprobe's "load if
+// available" behavior: a module with a matching .ko is loaded along with its
+// dependency closure; one absent from the tree is presumed built in and returned
+// in skipped. modulesDir == "" presumes every request is built in.
 func Resolve(modulesDir string, names []string) (load []Module, skipped []string, err error) {
 	var requested []string
 	for _, n := range names {
@@ -86,9 +79,8 @@ func Resolve(modulesDir string, names []string) (load []Module, skipped []string
 		return nil, nil, err
 	}
 
-	// order holds distinct canonical names, and a canonical name is derived from
-	// the .ko base name, so distinct names always have distinct base names — no
-	// two packed modules can collide on their root basename.
+	// Canonical names are derived from the .ko base name, so distinct names in
+	// order always have distinct base names — packed modules cannot collide.
 	for _, name := range order {
 		rel := index[name]
 		base := filepath.Base(rel)
@@ -106,20 +98,15 @@ func Resolve(modulesDir string, names []string) (load []Module, skipped []string
 	return load, skipped, nil
 }
 
-// buildModuleGraph builds the lookups Resolve needs from a modules tree:
-// an index from canonical module name to its tree-relative .ko path, and depsOf,
-// a per-module list of canonical dependency names. It prefers modules.dep (the
-// authoritative depmod output) when present; otherwise it walks the tree to index
-// the .ko files and reads dependencies from each module's ELF .modinfo on demand
-// (cached), transparently decompressing .ko.gz/.ko.xz/.ko.zst. A module whose
-// .modinfo cannot be read (not a parseable ELF, or an unknown compression) yields
-// no dependencies, with a single warning.
+// buildModuleGraph builds the lookups Resolve needs: an index from canonical
+// module name to tree-relative .ko path, and depsOf, a module's canonical
+// dependency names. It prefers modules.dep (depmod's output); otherwise it walks
+// the tree and reads dependencies from each module's ELF .modinfo on demand.
 func buildModuleGraph(modulesDir string) (map[string]string, func(string) []string, error) {
 	if HasModulesDep(modulesDir) {
 		depMap, idx, err := parseModulesDep(modulesDir)
 		if err != nil {
-			// A modules.dep(.bin) we cannot parse is not fatal: fall back to the
-			// .modinfo walk below, which works for uncompressed/.gz modules.
+			// Not fatal: fall back to the .modinfo walk below.
 			slog.Warn("cannot parse modules.dep; resolving dependencies from .ko .modinfo instead", "err", err)
 		} else {
 			depsOf := func(name string) []string {
@@ -158,8 +145,7 @@ func buildModuleGraph(modulesDir string) (map[string]string, func(string) []stri
 	return idx, depsOf, nil
 }
 
-// HasModulesDep reports whether the tree has a modules.dep in either form (text
-// or the binary modules.dep.bin).
+// HasModulesDep reports whether the tree has a modules.dep, text or binary.
 func HasModulesDep(modulesDir string) bool {
 	for _, f := range []string{"modules.dep", "modules.dep.bin"} {
 		if _, err := os.Stat(filepath.Join(modulesDir, f)); err == nil {
@@ -170,11 +156,8 @@ func HasModulesDep(modulesDir string) bool {
 }
 
 // parseModulesDep reads modules.dep, returning each module's dependency paths
-// (keyed by the module's tree-relative path) and an index from canonical module
-// name to that path. Each entry is a "<module-path>: <dep-path>..." line, with
-// paths relative to the modules-tree root. The text modules.dep is preferred;
-// when it is absent the binary modules.dep.bin (whose values are the same lines)
-// is read instead.
+// keyed by its tree-relative path, plus an index from canonical name to that
+// path. Falls back to modules.dep.bin, whose values are the same lines.
 func parseModulesDep(modulesDir string) (deps map[string][]string, index map[string]string, err error) {
 	deps = make(map[string][]string)
 	index = make(map[string]string)
@@ -215,9 +198,8 @@ func parseDepLine(line string, deps map[string][]string, index map[string]string
 	index[canonicalModuleName(modPath)] = modPath
 }
 
-// walkModuleIndex indexes every .ko file under modulesDir by canonical module
-// name, mapping to its tree-relative path. On a duplicate name (rare) the first
-// wins. Used when there is no modules.dep to provide the index.
+// walkModuleIndex indexes every .ko under modulesDir by canonical module name,
+// mapping to its tree-relative path. Used when there is no modules.dep.
 func walkModuleIndex(modulesDir string) (map[string]string, error) {
 	index := make(map[string]string)
 	err := filepath.WalkDir(modulesDir, func(p string, d fs.DirEntry, err error) error {
@@ -245,10 +227,8 @@ func walkModuleIndex(modulesDir string) (map[string]string, error) {
 	return index, nil
 }
 
-// koDepends reads a module's direct dependencies from its ELF .modinfo "depends="
-// field, as canonical names. It handles uncompressed .ko and gzip/xz/zstd-compressed
-// modules (.ko.gz/.ko.xz/.ko.zst), decompressing into memory to parse the ELF. A
-// module with no .modinfo or no depends= yields no dependencies.
+// koDepends reads a module's direct dependencies from its ELF .modinfo
+// "depends=" field, as canonical names.
 func koDepends(koPath string) ([]string, error) {
 	f, err := os.Open(koPath)
 	if err != nil {
@@ -276,9 +256,8 @@ func koDepends(koPath string) ([]string, error) {
 	return parseModinfoDepends(data), nil
 }
 
-// koReaderAt returns an io.ReaderAt over a module's uncompressed ELF bytes: a
-// plain .ko is read straight from the file, while a .ko.gz/.ko.xz/.ko.zst is
-// decompressed into memory (modules are small enough to hold).
+// koReaderAt returns an io.ReaderAt over a module's uncompressed ELF bytes,
+// decompressing a .ko.gz/.ko.xz/.ko.zst into memory (modules are small).
 func koReaderAt(f *os.File, base string) (io.ReaderAt, error) {
 	switch {
 	case strings.HasSuffix(base, ".ko"):
@@ -308,8 +287,7 @@ func koReaderAt(f *os.File, base string) (io.ReaderAt, error) {
 }
 
 // readAllReaderAt reads all of r into memory and returns an io.ReaderAt over it,
-// closing closer (when non-nil) afterward so a decompressor's resources are freed.
-// A read error takes precedence over a close error.
+// closing closer afterward. A read error takes precedence over a close error.
 func readAllReaderAt(r io.Reader, closer io.Closer) (io.ReaderAt, error) {
 	data, rerr := io.ReadAll(r)
 	var cerr error
@@ -325,9 +303,8 @@ func readAllReaderAt(r io.Reader, closer io.Closer) (io.ReaderAt, error) {
 	return bytes.NewReader(data), nil
 }
 
-// parseModinfoDepends extracts the canonical dependency names from a module's
-// .modinfo section, a sequence of NUL-separated "key=value" entries. It reads the
-// "depends=" entry (a comma-separated module-name list, possibly empty).
+// parseModinfoDepends extracts canonical dependency names from a module's
+// .modinfo section, a sequence of NUL-separated "key=value" entries.
 func parseModinfoDepends(modinfo []byte) []string {
 	var deps []string
 	for field := range bytes.SplitSeq(modinfo, []byte{0}) {
@@ -344,12 +321,9 @@ func parseModinfoDepends(modinfo []byte) []string {
 	return deps
 }
 
-// parseModulesBuiltin reads modules.builtin into a set of canonical module names.
-// The text form is preferred; when it is absent the binary modules.builtin.bin
-// (whose keys are the built-in module names) is read instead. Both files are
-// optional — a tree with neither yields an empty set — and a .bin we cannot parse
-// is non-fatal (built-in detection is advisory; it only affects whether a missing
-// requested module is skipped quietly or with a warning).
+// parseModulesBuiltin reads modules.builtin (or modules.builtin.bin) into a set
+// of canonical module names. Both files are optional and an unparseable .bin is
+// non-fatal: built-in detection only affects whether a skip is warned about.
 func parseModulesBuiltin(modulesDir string) (map[string]bool, error) {
 	set := make(map[string]bool)
 
@@ -379,11 +353,9 @@ func parseModulesBuiltin(modulesDir string) (map[string]bool, error) {
 	return set, nil
 }
 
-// topoSortModules returns the dependency closure of roots (canonical module names)
-// in load order — dependencies before the modules that need them — de-duplicated.
-// depsOf gives a module's direct dependencies; has reports whether a name has a
-// .ko in the tree, so a dependency that is built into the kernel (or otherwise
-// absent) is skipped rather than chased.
+// topoSortModules returns the de-duplicated dependency closure of roots in load
+// order. has reports whether a name has a .ko in the tree, so a dependency that
+// is built in (or otherwise absent) is skipped rather than chased.
 func topoSortModules(roots []string, depsOf func(string) []string, has func(string) bool) ([]string, error) {
 	const (
 		visiting = 1
@@ -410,7 +382,7 @@ func topoSortModules(roots []string, depsOf func(string) []string, has func(stri
 			}
 		}
 		state[name] = done
-		order = append(order, name) // post-order: dependencies appended before name
+		order = append(order, name) // post-order: dependencies come first
 		return nil
 	}
 	for _, r := range roots {
@@ -429,9 +401,9 @@ func IsKoFile(name string) bool {
 		strings.HasSuffix(name, ".ko.zst")
 }
 
-// canonicalModuleName reduces a module name or .ko path to the canonical form
-// used for matching: the base name with any ".ko"(+compression) suffix removed
-// and hyphens folded to underscores (modprobe treats the two interchangeably).
+// canonicalModuleName reduces a module name or .ko path to its base name with
+// any ".ko"(+compression) suffix removed and hyphens folded to underscores, as
+// modprobe treats the two interchangeably.
 func canonicalModuleName(s string) string {
 	s = filepath.Base(s)
 	if i := strings.Index(s, ".ko"); i >= 0 {
@@ -441,9 +413,8 @@ func canonicalModuleName(s string) string {
 }
 
 // kmod binary-index (.bin) format constants, from kmod's libkmod-index.c. A .bin
-// file is a 12-byte header (big-endian magic, version, root-node offset) followed
-// by a radix trie of nodes; each node may carry a prefix, a child table, and/or a
-// list of values, flagged in the high bits of its offset word.
+// file is a 12-byte header (magic, version, root-node offset) followed by a radix
+// trie; a node's offset word flags whether it carries a prefix, children, values.
 const (
 	kmodIndexMagic = 0xB007F457
 	kmodNodePrefix = 0x80000000
@@ -454,11 +425,9 @@ const (
 
 var errCorruptKmodIndex = errors.New("corrupt kmod index")
 
-// readKmodIndex parses a kmod binary index file (modules.dep.bin,
-// modules.builtin.bin) into a map of key → values, used to read the .bin forms
-// when the text modules.dep/modules.builtin are absent (some trees ship only the
-// binary indices). For modules.dep.bin each value is a modules.dep line; for
-// modules.builtin.bin the keys are the built-in module names (values empty).
+// readKmodIndex parses a kmod binary index (modules.dep.bin, modules.builtin.bin)
+// into a map of key → values. For modules.dep.bin each value is a modules.dep
+// line; for modules.builtin.bin the keys are module names and values are empty.
 func readKmodIndex(path string) (map[string][]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -479,8 +448,7 @@ func readKmodIndex(path string) (map[string][]string, error) {
 }
 
 // readKmodNode walks the node at word (offset + flags), accumulating key prefixes
-// down the trie and recording each node's values under its full key. seen guards
-// against cycles in a corrupt file.
+// down the trie. seen guards against cycles in a corrupt file.
 func readKmodNode(data []byte, word uint32, prefix string, out map[string][]string, seen map[uint32]bool) error {
 	nodeOff := word & kmodNodeMask
 	if nodeOff == 0 {

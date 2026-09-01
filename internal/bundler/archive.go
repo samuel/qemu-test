@@ -16,8 +16,7 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// modeTypeMask isolates the file-type bits (S_IFMT) of a cpio record's mode so
-// regular files can be told apart from directories, symlinks, and device nodes.
+// modeTypeMask isolates the file-type bits (S_IFMT) of a cpio record's mode.
 const modeTypeMask = 0o170000
 
 // arMagic is the global header of an ar archive, which a Debian .deb is.
@@ -31,11 +30,8 @@ type archiveEntry struct {
 }
 
 // readArchive reads every regular file from the archive at path, calling fn for
-// each. The archive may be a newc cpio (e.g. a Linux initramfs), a tar, or a
-// Debian .deb (an ar archive, whose data.tar member is read), optionally
-// gzip/xz/zstd-compressed; the format is detected by leading magic bytes, not by
-// file extension. Directories, symlinks, and other non-regular entries are
-// skipped, mirroring cache.ExtractArchive.
+// each. The archive may be a newc cpio, a tar, or a Debian .deb, optionally
+// gzip/xz/zstd-compressed; the format is detected by magic, not extension.
 func readArchive(path string, fn func(archiveEntry) error) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -46,9 +42,8 @@ func readArchive(path string, fn func(archiveEntry) error) error {
 	return readArchiveStream(bufio.NewReader(f), fn)
 }
 
-// readArchiveStream reads an archive from r: a .deb (ar) is unwrapped to its
-// data.tar member, any gzip/xz/zstd wrapper is stripped, and the inner cpio or
-// tar is read. It is called recursively for a .deb's data.tar member.
+// readArchiveStream reads an archive from r: a .deb is unwrapped to its data.tar
+// member (recursively), any compression wrapper stripped, then cpio or tar read.
 func readArchiveStream(r *bufio.Reader, fn func(archiveEntry) error) error {
 	if m, _ := r.Peek(len(arMagic)); string(m) == arMagic {
 		return readDeb(r, fn)
@@ -66,18 +61,16 @@ func readArchiveStream(r *bufio.Reader, fn func(archiveEntry) error) error {
 		sb = bufio.NewReader(src)
 	}
 
-	// newc cpio carries its magic at offset 0; anything else is treated as tar
-	// (whose "ustar" magic sits at offset 257), and a non-archive surfaces as a
-	// read error from the tar reader.
+	// newc cpio carries its magic at offset 0; anything else is read as tar, and
+	// a non-archive surfaces as a read error from the tar reader.
 	if m, _ := sb.Peek(6); string(m) == "070701" {
 		return readCPIO(sb, fn)
 	}
 	return readTar(sb, fn)
 }
 
-// decompress wraps r in a decompressor chosen by the leading magic bytes (gzip,
-// xz, or zstd), returning the decompressed reader and an optional io.Closer to
-// release decompressor resources (nil when none is needed). An uncompressed
+// decompress wraps r in a gzip, xz, or zstd decompressor chosen by magic,
+// returning it plus an optional Closer releasing its resources. An uncompressed
 // stream is returned unchanged.
 func decompress(r *bufio.Reader) (io.Reader, io.Closer, error) {
 	switch m, _ := r.Peek(6); {
@@ -105,9 +98,8 @@ func decompress(r *bufio.Reader) (io.Reader, io.Closer, error) {
 	}
 }
 
-// readDeb reads the data.tar member of a .deb (an ar archive) as the bundle
-// payload. The other members (debian-binary, control.tar) carry only package
-// metadata and are skipped; data.tar holds the installed files.
+// readDeb reads the data.tar member of a .deb (an ar archive), which holds the
+// installed files; the metadata members are skipped.
 func readDeb(r *bufio.Reader, fn func(archiveEntry) error) error {
 	if _, err := r.Discard(len(arMagic)); err != nil {
 		return fmt.Errorf("ar: %w", err)
@@ -132,8 +124,7 @@ func readDeb(r *bufio.Reader, fn func(archiveEntry) error) error {
 }
 
 // readArHeader reads one 60-byte ar member header, returning the member's name
-// (trailing padding and any GNU "/" suffix trimmed) and content size. It returns
-// io.EOF when the archive has no more members.
+// and content size, or io.EOF when the archive has no more members.
 func readArHeader(r io.Reader) (name string, size int64, err error) {
 	var hdr [60]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {

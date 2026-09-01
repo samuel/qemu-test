@@ -17,15 +17,9 @@ const (
 
 // Normalize normalizes namepath to be relative to /.
 func Normalize(name string) string {
-	// do not use filepath.IsAbs, it will not work on Windows.
-	// do not use filepath.Rel, that will not work
-	// sensibly on windows.
-	// The only thing one can do is strip all leading
-	// /
+	// Avoid filepath.Clean and its path checks,
+	// they behave differently on Windows, and cpio always uses "/".
 	name = strings.TrimLeft(name, "/")
-	// do not use filepath.Clean here.
-	// This will result in paths with \\ on windows, and
-	// / is the cpio standard.
 	return path.Clean(name)
 }
 

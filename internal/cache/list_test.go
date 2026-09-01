@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// writeBody writes a fake cached download (body + .json sidecar) for rawURL with
-// the given body size and fetch time, returning its cache key.
+// writeBody writes a fake cached download (body + sidecar) for rawURL, returning
+// its cache key.
 func writeBody(t *testing.T, dir, rawURL string, size int, fetchedAt time.Time) string {
 	t.Helper()
 	key := CacheKey(rawURL)
@@ -90,8 +90,7 @@ func TestListGroupsAndIgnoresTransient(t *testing.T) {
 		t.Fatalf("got %d entries, want 4: %+v", len(entries), entries)
 	}
 
-	// Sorted newest-fetched first: bundle (-1h) before kernel (-2h); the built
-	// bundle and orphan have no fetch time and sort last.
+	// Newest-fetched first; entries with no fetch time sort last.
 	if entries[0].Key != bundleKey || entries[1].Key != kernelKey {
 		t.Errorf("unexpected sort order: %s, %s", entries[0].Kind, entries[1].Kind)
 	}

@@ -112,14 +112,13 @@ func TestResolveBundleLocalDir(t *testing.T) {
 	if env.KernelPath != filepath.Join(dir, "vmlinuz") {
 		t.Fatalf("KernelPath = %q", env.KernelPath)
 	}
-	if env.ModulesDir != mod {
-		t.Fatalf("ModulesDir = %q, want %q", env.ModulesDir, mod)
+	if env.ModulesPath != mod {
+		t.Fatalf("ModulesDir = %q, want %q", env.ModulesPath, mod)
 	}
 }
 
 func TestBundleEnvModulesWithoutModulesDep(t *testing.T) {
-	// A bundle whose lib/modules/<release> tree ships only .ko files (no
-	// modules.dep, like an extracted netboot initrd) is still recognized.
+	// A tree shipping only .ko files (no modules.dep) is still recognized.
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "vmlinuz"), []byte("k"), 0o644); err != nil {
 		t.Fatal(err)
@@ -136,15 +135,15 @@ func TestBundleEnvModulesWithoutModulesDep(t *testing.T) {
 		t.Fatalf("bundleEnv: %v", err)
 	}
 	want := filepath.Join(dir, "lib", "modules", "6.12.0")
-	if env.ModulesDir != want {
-		t.Fatalf("ModulesDir = %q, want %q (a .ko-only tree should be recognized)", env.ModulesDir, want)
+	if env.ModulesPath != want {
+		t.Fatalf("ModulesDir = %q, want %q (a .ko-only tree should be recognized)", env.ModulesPath, want)
 	}
 }
 
 func TestBundleEnvLibModulesAndDTBOverrides(t *testing.T) {
 	dir := t.TempDir()
-	// Non-default kernel name + a lib/modules/<release> tree + a dtb, all selected
-	// via arch overrides.
+	// A non-default kernel name, a lib/modules/<release> tree, and a dtb, all
+	// selected via arch overrides.
 	if err := os.WriteFile(filepath.Join(dir, "Image"), []byte("k"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -169,8 +168,8 @@ func TestBundleEnvLibModulesAndDTBOverrides(t *testing.T) {
 	if env.KernelPath != filepath.Join(dir, "Image") {
 		t.Fatalf("KernelPath = %q", env.KernelPath)
 	}
-	if env.ModulesDir != rel {
-		t.Fatalf("ModulesDir = %q, want %q", env.ModulesDir, rel)
+	if env.ModulesPath != rel {
+		t.Fatalf("ModulesDir = %q, want %q", env.ModulesPath, rel)
 	}
 	if env.DTBPath != filepath.Join(dir, "dtb", "board.dtb") {
 		t.Fatalf("DTBPath = %q", env.DTBPath)

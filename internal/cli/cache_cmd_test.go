@@ -10,8 +10,8 @@ import (
 	"github.com/samuel/qemu-test/internal/cache"
 )
 
-// runCache invokes cacheCommand with stdout+stderr captured, returning the exit
-// code and combined output.
+// runCache invokes cacheCommand with output captured, returning the exit code
+// and combined output.
 func runCache(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	oldOut, oldErr := os.Stdout, os.Stderr

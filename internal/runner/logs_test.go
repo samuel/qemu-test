@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// parseAll feeds chunks to a fresh logParser (then flushes) and returns the
-// (key, line) records the callback observed. Strings are copied immediately, as
-// the callback's byte slices alias the parser's internal buffer.
+// parseAll feeds chunks to a fresh logParser and returns the (key, line) records
+// observed. Strings are copied, as the callback's slices alias the parser buffer.
 func parseAll(t *testing.T, chunks ...string) [][2]string {
 	t.Helper()
 	var recs [][2]string
@@ -37,8 +36,7 @@ func keys(recs [][2]string) []string {
 	return ks
 }
 
-// Regression for the bug where Write processed only the first complete line per
-// call: a chunk batching several lines and ending in a [TESTS:PASS] marker must
+// A chunk batching several lines and ending in a [TESTS:PASS] marker must
 // surface every line, not strand the verdict.
 func TestLogParserProcessesAllLinesInOneWrite(t *testing.T) {
 	recs := parseAll(t, "[TESTS:STDOUT] one\n[TESTS:STDOUT] two\n[TESTS:PASS]\n")
@@ -63,8 +61,8 @@ func TestLogParserHandlesSplitWrites(t *testing.T) {
 	}
 }
 
-// flush must recover a final line emitted without a trailing newline (the VM
-// can power off immediately after printing the verdict).
+// flush must recover a final line emitted without a trailing newline: the VM can
+// power off immediately after printing the verdict.
 func TestLogParserFlushesTrailingLine(t *testing.T) {
 	recs := parseAll(t, "[TESTS:STDOUT] partial\n[TESTS:FAIL] boom")
 	if got, want := keys(recs), []string{"STDOUT", "FAIL"}; !reflect.DeepEqual(got, want) {

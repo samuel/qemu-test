@@ -7,21 +7,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// setupLoopback brings up the loopback interface so guest tests can use
-// 127.0.0.1 / ::1 — net.Listen on localhost, httptest.NewServer, and the like.
-// lo is administratively down at boot, so without this any localhost networking
-// fails ("network is unreachable" / "cannot assign requested address"), which is
-// extremely common in Go test suites. Best-effort: a test that does no localhost
-// networking shouldn't fail the run if this doesn't take, so it logs and
-// continues (matching mountOut).
+// setupLoopback brings up lo (down at boot) so tests can use 127.0.0.1 / ::1.
+// Best-effort: fail only by logging.
 func setupLoopback() {
 	if err := bringUpLoopback(); err != nil {
 		log.Printf("bring up loopback: %v", err)
 	}
 }
 
-// bringUpLoopback sets IFF_UP on "lo" via SIOCSIFFLAGS. Upping the single
-// interface activates both 127.0.0.1 and ::1.
+// bringUpLoopback sets IFF_UP on "lo", activating both 127.0.0.1 and ::1.
 func bringUpLoopback() error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {

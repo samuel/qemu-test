@@ -1,7 +1,6 @@
 // Package runner builds the guest initramfs (init + the compiled test binary +
 // the requested kernel modules), launches the architecture's qemu binary, and
-// parses the serial console for the test verdict. It is the orchestration core
-// the CLI drives.
+// parses the serial console for the test verdict.
 package runner
 
 import (
@@ -32,33 +31,33 @@ import (
 	"github.com/samuel/qemu-test/internal/qmp"
 )
 
-// ErrNoTests reports that the target package has no test files, so there is no
-// test binary to run in the guest. Treated like `go test` (a notice, exit 0).
+// ErrNoTests reports that the target package has no test files. Treated like
+// `go test`: a notice, exit 0.
 var ErrNoTests = errors.New("no test files")
 
 // Options carries the inputs for a single VM run, assembled from the flags.
 type Options struct {
 	Arch           arch.Arch
 	KernelOverride string
-	BundleOverride string        // -bundle path or URL (boot bundle: kernel + modules + dtb)
-	Refresh        bool          // re-validate a URL kernel or bundle against the remote (-refresh)
-	Modules        []string      // kernel modules to load in the guest before tests (-module)
+	BundleOverride string        // -bundle path or URL (kernel + modules + dtb)
+	Refresh        bool          // re-validate a URL kernel or bundle against the remote
+	Modules        []string      // kernel modules to load in the guest before tests
 	Mem            string        // guest RAM (-mem), used for the module-size guardrail
 	TestPath       string        // Go package to test
-	TestBuildArgs  []string      // build flags for the test binary (e.g. -tags, -cover)
+	TestBuildArgs  []string      // build flags for the test binary
 	TestArgs       []string      // argv passed to the test binary in the guest
 	TestEnv        []string      // KEY=VALUE env for the test binary
 	QEMUArgs       []string      // user/resource qemu args, before the arch boot args
-	KVM            bool          // enable KVM acceleration (-enable-kvm, -cpu host)
+	KVM            bool          // enable KVM acceleration
 	Keep           bool          // keep the temp dir and log the qemu command line
-	ExtraCmdline   []string      // extra kernel cmdline tokens (-append), merged after console=
+	ExtraCmdline   []string      // extra kernel cmdline tokens, merged after console=
 	Timeout        time.Duration // max wall-clock for the VM run; 0 = no limit
-	EmbedFiles     embed.FS      // embedded init source + go.mod/go.sum, compiled in the temp dir
+	EmbedFiles     embed.FS      // embedded init source + go.mod/go.sum
 }
 
-// ResolveKVM decides whether to enable KVM acceleration. "off" never enables,
-// "on" always does, and "auto" enables only when the guest arch matches the host
-// (KVM cannot accelerate cross-architecture emulation) and /dev/kvm is writable.
+// ResolveKVM decides whether to enable KVM acceleration. "auto" enables only
+// when the guest arch matches the host (KVM cannot accelerate cross-architecture
+// emulation) and /dev/kvm is writable.
 func ResolveKVM(mode, guestArch string) (bool, error) {
 	switch mode {
 	case "off":
@@ -80,11 +79,9 @@ func ResolveKVM(mode, guestArch string) (bool, error) {
 	}
 }
 
-// firmwareDirs returns candidate directories to search for a qemu firmware blob,
-// given the resolved qemu binary path. The first entry derives the install's data
-// dir from the binary (<prefix>/bin/qemu-system-X -> <prefix>/share/qemu), which
-// covers both Homebrew (/opt/homebrew/...) and a system install (/usr/...); the
-// rest are common fixed locations as a fallback.
+// firmwareDirs returns candidate directories for a qemu firmware blob. The first
+// derives the install's data dir from the binary (<prefix>/bin/qemu-system-X ->
+// <prefix>/share/qemu); the rest are common fixed locations.
 func firmwareDirs(qemuBinaryPath string) []string {
 	var dirs []string
 	if qemuBinaryPath != "" {
@@ -126,8 +123,8 @@ func findFirmware(qemuBinary, name string) (string, error) {
 }
 
 // Run builds the guest initramfs, boots qemu, and reports the test verdict: nil
-// on pass, "tests failed" on a reported failure, or a noVerdictError (carrying the
-// console tail) for a boot/init/qemu failure or a timeout.
+// on pass, "tests failed" on a reported failure, or a noVerdictError for a
+// boot/init/qemu failure or a timeout.
 func Run(ctx context.Context, o Options) error {
 	if o.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -141,9 +138,8 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("qemu binary %q not found for arch %s (install it via your package manager): %w", a.QEMUBinary, a.Name, err)
 	}
 
-	// Some arches (loong64) need a firmware blob passed via -bios so the guest gets
-	// ACPI tables. Locate it now (also fail fast), unless the user supplied their own
-	// -bios via -qemu.arg.
+	// Locate the arch's firmware blob (also fail fast), unless the user supplied
+	// their own -bios via -qemu.arg.
 	var firmwarePath string
 	if a.Firmware != "" && !slices.Contains(o.QEMUArgs, "-bios") {
 		var err error
@@ -175,8 +171,8 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("failed to copy embed files: %w", err)
 	}
 
-	// Resolve the kernel (and, for a bundle, its modules + dtb) before the (slower)
-	// guest build so a bad -kernel/-bundle path/URL or layout fails fast.
+	// Resolve the kernel before the slower guest build so a bad -kernel/-bundle
+	// path, URL, or layout fails fast.
 	env, err := boot.Resolve(ctx, boot.Options{
 		Arch:           a,
 		KernelOverride: o.KernelOverride,
@@ -190,12 +186,10 @@ func Run(ctx context.Context, o Options) error {
 
 	extraFiles := make(map[string]io.Reader)
 	extraFiles["test-args.txt"] = bytes.NewReader([]byte(strings.Join(o.TestArgs, "\n")))
-	// test-env.txt carries KEY=VALUE lines for the guest to set on the test
-	// binary's environment (see -env); empty when none were given.
+	// KEY=VALUE lines the guest appends to the test binary's environment.
 	extraFiles["test-env.txt"] = bytes.NewReader([]byte(strings.Join(o.TestEnv, "\n")))
-	// test-modules.txt lists the in-guest .ko paths (dependency order) the guest
-	// loads before tests; empty when no modules were requested or all are built in.
-	modPaths, err := addModules(o, env.ModulesDir, extraFiles)
+	// In-guest .ko paths in dependency order, loaded before the tests run.
+	modPaths, err := addModules(o, env.ModulesPath, extraFiles)
 	if err != nil {
 		return err
 	}
@@ -205,7 +199,7 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return err
 	}
-	//nolint:errcheck // data is flushed via the checked gzip.Writer.Close in buildTests; this deferred close only releases the fd on early-return paths.
+	//nolint:errcheck // buildTests' checked gzip close flushes the data. This close only releases the fd on error paths.
 	defer ifs.Close()
 	slog.Debug("Building initramfs")
 	target := builder.Target{GOOS: "linux", GOARCH: a.GOARCH}
@@ -235,13 +229,11 @@ func Run(ctx context.Context, o Options) error {
 		resultPass
 		resultFail
 	)
-	// qmp is set once the QMP handshake completes (after the VM starts). The
-	// guest forwards QMP commands by printing "[QMP]<json>"; tests only do so
-	// well after boot, so by then the connection is established.
+	// Set once the QMP handshake completes. The guest forwards QMP commands by
+	// printing "[QMP]<json>", which tests only do well after boot.
 	var qmpConn atomic.Pointer[qmp.Conn]
-	// tail keeps the last few console lines so a run that never reports a verdict
-	// (kernel panic, init crash, bad qemu args) can show what the guest last
-	// printed instead of a bare "unknown result".
+	// The last console lines, so a run that never reports a verdict (kernel panic,
+	// init crash, bad qemu args) can show what the guest last printed.
 	const tailMax = 25
 	var tail []string
 	recordTail := func(line []byte) {
@@ -276,9 +268,9 @@ func Run(ctx context.Context, o Options) error {
 				case "FAIL":
 					result = resultFail
 				default:
-					// Never return an error from the parser callback: it would
-					// propagate out of lp.Write, stop the os/exec copier from
-					// draining qemu's stdout, and hang qemu until the deadline.
+					// Never return an error from this callback: it would propagate
+					// out of lp.Write, stop the os/exec copier draining qemu's
+					// stdout, and hang qemu until the deadline.
 					slog.Warn("unknown log key", "key", k, "line", string(bytes.TrimRight(line, "\n")))
 				}
 			} else {
@@ -293,7 +285,7 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("qemu start: %w", err)
 	}
 	// Connect the QMP control channel while the VM boots. Best-effort: a failure
-	// only disables QMP-driven tests (e.g. hotplug), which then skip/time out.
+	// only disables QMP-driven tests, which then skip or time out.
 	if q, err := qmp.Dial(qmpSock, 5*time.Second); err != nil {
 		slog.Error("connect qmp", "err", err)
 	} else {
@@ -302,16 +294,14 @@ func Run(ctx context.Context, o Options) error {
 		defer q.Close()
 	}
 	waitErr := qcmd.Wait()
-	// Process any final line the parser buffered without a trailing newline.
-	// The qemu output copier goroutines have finished by the time Wait returns,
-	// so there is no concurrent writer to race with here.
+	// Process any final line buffered without a trailing newline. Wait has already
+	// joined the output copier goroutines, so nothing races here.
 	if err := lp.flush(); err != nil {
 		return err
 	}
 	if waitErr != nil {
 		// A deadline kill surfaces as a generic Wait error (qemu was SIGKILLed);
-		// report the timeout instead so the cause is clear. Either way carry the
-		// console tail so a boot failure is diagnosable.
+		// report the timeout instead so the cause is clear.
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return &noVerdictError{msg: fmt.Sprintf("timed out after %s", o.Timeout), tail: tail, err: ctx.Err()}
 		}
@@ -324,16 +314,14 @@ func Run(ctx context.Context, o Options) error {
 	case resultFail:
 		return errors.New("tests failed")
 	}
-	// No verdict despite a clean qemu exit: the guest powered off without printing
-	// [TESTS:PASS]/[TESTS:FAIL] — a boot/init failure (kernel panic, init crash,
-	// missing /tests), not a test failure.
+	// A clean qemu exit with no verdict means the guest powered off without
+	// printing [TESTS:PASS]/[TESTS:FAIL]: a boot or init failure.
 	return &noVerdictError{msg: "guest did not report a pass/fail verdict (boot or init failure)", tail: tail}
 }
 
-// noVerdictError reports a run that produced no pass/fail verdict (boot/init
-// failure, qemu failure, or timeout). It carries the captured console tail so the
-// cause is visible, and unwraps to the underlying cause so errors.Is still works
-// (e.g. a timeout still matches context.DeadlineExceeded).
+// noVerdictError reports a run that produced no pass/fail verdict. It carries the
+// captured console tail and unwraps to the underlying cause, so a timeout still
+// matches context.DeadlineExceeded.
 type noVerdictError struct {
 	msg  string
 	tail []string
@@ -351,8 +339,7 @@ func tailSuffix(tail []string) string {
 	return "; last console output:\n" + strings.Join(tail, "\n")
 }
 
-// quoteCommand renders a binary + args as a single, roughly copy-pasteable shell
-// command, single-quoting any argument that contains whitespace.
+// quoteCommand renders a binary + args as a roughly copy-pasteable shell command.
 func quoteCommand(bin string, args []string) string {
 	var b strings.Builder
 	b.WriteString(bin)
@@ -400,16 +387,10 @@ func copyEmbedFS(out *os.Root, efs embed.FS) error {
 }
 
 // addModules resolves the requested -module names against the bundle's modules
-// tree and packs each resulting .ko (in dependency order) into extraFiles at the
-// initramfs root, by basename, returning the in-guest names the guest loads (see
-// test-modules.txt). Packing flat at the root matches the other initramfs files
-// (init, tests, test-*.txt) and avoids the cpio archive needing directory records
-// (BuildInitramfs emits only regular files, and the kernel's initramfs unpacker
-// does not create parent dirs); modules.Resolve already guarantees unique basenames.
-// Modules absent from the tree are presumed built in and skipped. .ko files are
-// small (only the requested dependency closure is packed), so they are read into
-// memory; a guardrail warns when their total is large relative to guest RAM,
-// since initramfs content occupies guest memory.
+// tree and packs each resulting .ko into extraFiles at the initramfs root, by
+// basename, returning the in-guest names in dependency order. Flat at the root
+// because BuildInitramfs emits only regular files and the kernel's unpacker does
+// not create parent dirs; modules.Resolve guarantees unique basenames.
 func addModules(o Options, modulesDir string, extraFiles map[string]io.Reader) ([]string, error) {
 	load, skipped, err := modules.Resolve(modulesDir, o.Modules)
 	if err != nil {
@@ -436,8 +417,8 @@ func addModules(o Options, modulesDir string, extraFiles map[string]io.Reader) (
 	return guestNames, nil
 }
 
-// warnModuleMemory warns when the packed modules' bytes are a large fraction
-// (>=25%) of guest RAM, since the initramfs is unpacked into guest memory.
+// warnModuleMemory warns when the packed modules are >=25% of guest RAM, since
+// the initramfs is unpacked into guest memory.
 func warnModuleMemory(totalBytes int64, mem string) {
 	memBytes, ok := parseMemBytes(mem)
 	if !ok || memBytes <= 0 {
@@ -449,8 +430,8 @@ func warnModuleMemory(totalBytes int64, mem string) {
 	}
 }
 
-// parseMemBytes parses a qemu -m value (a bare number of MiB, or one with a
-// B/K/M/G suffix) into bytes. The bool is false for an unparseable value.
+// parseMemBytes parses a qemu -m value (bare MiB, or a B/K/M/G suffix) into
+// bytes, reporting false when it cannot be parsed.
 func parseMemBytes(mem string) (int64, bool) {
 	s := strings.TrimSpace(mem)
 	if s == "" {
@@ -483,11 +464,8 @@ func buildTests(ctx context.Context, out io.Writer, target builder.Target, initS
 	if err := builder.GoBuildTest(ctx, testBuf, target, testPath, testBuildArgs...); err != nil {
 		return err
 	}
-	// go test -c writes the compiled ELF test binary to stdout when the package
-	// has test files; with none it writes a "?  <pkg> [no test files]" notice and
-	// no binary. Detect the missing ELF here, before building the initramfs, so we
-	// report it clearly instead of packing a non-executable /tests that fails in
-	// the guest with "exec format error".
+	// With no test files `go test -c` writes a notice instead of an ELF binary.
+	// Catch that here rather than packing a /tests the guest cannot exec.
 	if !bytes.HasPrefix(testBuf.Bytes(), []byte("\x7fELF")) {
 		return ErrNoTests
 	}

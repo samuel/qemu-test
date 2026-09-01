@@ -7,24 +7,20 @@ import (
 	"strings"
 )
 
-// hasWildcard reports whether a single path segment contains a glob
-// metacharacter that path.Match interprets.
+// hasWildcard reports whether a path segment contains a glob metacharacter.
 func hasWildcard(seg string) bool {
 	return strings.ContainsAny(seg, "*?[")
 }
 
 // matchGlob reports whether name matches pattern using doublestar semantics:
-// "*" (and the other path.Match metacharacters) match within a single path
-// segment, while "**" matches any number of segments including none. Both
-// pattern and name are slash-separated and assumed already normalized (no
-// leading "./" or "/").
+// "*" matches within a single path segment, "**" any number of segments
+// including none. Both are slash-separated and assumed already normalized.
 func matchGlob(pattern, name string) (bool, error) {
 	return matchSegments(strings.Split(pattern, "/"), strings.Split(name, "/"))
 }
 
 // matchSegments matches the remaining pattern segments against the remaining
-// name segments. A "**" segment matches zero or more name segments; every other
-// segment matches exactly one name segment via path.Match.
+// name segments.
 func matchSegments(pat, name []string) (bool, error) {
 	for len(pat) > 0 {
 		if pat[0] == "**" {
@@ -58,11 +54,9 @@ func matchSegments(pat, name []string) (bool, error) {
 	return len(name) == 0, nil
 }
 
-// fixedPrefix returns the leading slash-separated portion of pattern up to (but
-// excluding) the first segment that contains a wildcard, with no trailing
-// slash. It is the part of a matched name stripped before the remainder is
-// joined onto a destination directory, so a tree's structure below the wildcard
-// is preserved.
+// fixedPrefix returns the leading portion of pattern before its first wildcard
+// segment. Stripping it from a matched name preserves the tree structure below
+// the wildcard when joining onto a destination directory.
 func fixedPrefix(pattern string) string {
 	var fixed []string
 	for seg := range strings.SplitSeq(pattern, "/") {
@@ -75,20 +69,17 @@ func fixedPrefix(pattern string) string {
 }
 
 // parsedPattern is a Source glob split at an optional "." keep-anchor (rsync -R
-// style). glob is the anchor-free pattern matched against entry names. When
-// anchored, the part of a matched name from segment lead onward is the relative
-// path kept under a directory destination, so everything before the "." — a
-// variable version dir matched by "*", say — is dropped.
+// style). glob is matched against entry names; when anchored, only the part of a
+// matched name from segment lead onward is kept under a directory destination.
 type parsedPattern struct {
 	glob     string
 	anchored bool
 	lead     int
 }
 
-// parsePattern splits an optional "." keep-anchor out of a Source glob. The "."
-// segment marks where the kept path begins; segments before it must each consume
-// exactly one name segment (no "**"), so the kept remainder starts at a fixed
-// index.
+// parsePattern splits an optional "." keep-anchor out of a Source glob. Segments
+// before the anchor must each consume exactly one name segment (no "**") so the
+// kept remainder starts at a fixed index.
 func parsePattern(p string) (parsedPattern, error) {
 	anchor := -1
 	var glob []string
@@ -116,12 +107,10 @@ func parsePattern(p string) (parsedPattern, error) {
 	return pp, nil
 }
 
-// mapDest computes the output path for a matched archive entry. name is the
-// (normalized) entry name and dst the configured destination. A dst ending in
+// mapDest computes the output path for a matched archive entry. A dst ending in
 // "/" is a directory: an anchored pattern keeps the name from segment lead
-// onward, otherwise the entry's path with pp.glob's fixed prefix removed is
-// appended under it. A dst without a trailing "/" is the exact output path (the
-// caller enforces that such a pattern matches one entry).
+// onward, otherwise the name with the glob's fixed prefix removed. Any other dst
+// is the exact output path (the caller enforces a single match).
 func mapDest(pp parsedPattern, dst, name string) string {
 	if !strings.HasSuffix(dst, "/") {
 		return dst

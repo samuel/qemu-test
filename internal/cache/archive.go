@@ -28,8 +28,7 @@ func ExtractArchiveAtomic(archivePath, dest, workDir string) error {
 		_ = os.RemoveAll(tmp) //nolint:errcheck // best-effort cleanup
 		return err
 	}
-	// Replace any prior extraction (e.g. on refresh): rename onto an existing dir
-	// fails, so clear it first.
+	// Rename onto an existing dir fails, so clear any prior extraction first.
 	if err := os.RemoveAll(dest); err != nil {
 		_ = os.RemoveAll(tmp) //nolint:errcheck // best-effort cleanup
 		return err
@@ -41,11 +40,9 @@ func ExtractArchiveAtomic(archivePath, dest, workDir string) error {
 	return nil
 }
 
-// ExtractArchive extracts a tar or gzip-compressed tar (sniffed by magic, not
-// extension) into destDir. Regular files and directories are written; symlinks,
-// hardlinks, and device nodes are skipped (a modules tree needs only modules.dep,
-// modules.builtin, and the .ko files, and skipping links avoids escapes). Entry
-// paths are validated against destDir so a crafted "../" entry cannot escape.
+// ExtractArchive extracts a tar or gzip-compressed tar (sniffed by magic) into
+// destDir. Only regular files and directories are written: a modules tree needs
+// nothing else, and skipping links avoids escapes.
 func ExtractArchive(archivePath, destDir string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -74,8 +71,8 @@ func ExtractArchive(archivePath, destDir string) error {
 			return err
 		}
 		target := filepath.Join(destDir, hdr.Name)
-		// zip-slip guard: filepath.Join cleans the path, so an entry that climbs
-		// out of destDir no longer has destDir as a prefix.
+		// Zip-slip guard: Join cleans the path, so an entry climbing out of
+		// destDir no longer has it as a prefix.
 		if target != destDir && !strings.HasPrefix(target, destDir+string(os.PathSeparator)) {
 			return fmt.Errorf("unsafe archive entry %q escapes the extraction directory", hdr.Name)
 		}
@@ -92,7 +89,6 @@ func ExtractArchive(archivePath, destDir string) error {
 			if err != nil {
 				return err
 			}
-			// tar.Reader bounds reads to this entry, so io.Copy reads exactly its bytes.
 			_, copyErr := io.Copy(out, tr)
 			closeErr := out.Close()
 			if err := firstErr(copyErr, closeErr); err != nil {

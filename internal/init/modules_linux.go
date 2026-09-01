@@ -9,20 +9,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// moduleInitCompressedFile is finit_module(2)'s MODULE_INIT_COMPRESSED_FILE flag:
-// the kernel decompresses the module image itself (requires CONFIG_MODULE_DECOMPRESS).
-// Defined locally so loading does not depend on the constant's presence in the
-// pulled x/sys/unix version; the value is stable kernel ABI.
+// moduleInitCompressedFile is finit_module(2)'s MODULE_INIT_COMPRESSED_FILE: the
+// kernel decompresses the module itself (needs CONFIG_MODULE_DECOMPRESS). Defined
+// locally so it does not depend on the pulled x/sys/unix version.
 const moduleInitCompressedFile = 0x4
 
-// loadModules loads the kernel modules listed in test-modules.txt — one
-// in-initramfs .ko path per line, in dependency order — which the host writes
-// from the -module flag. The file is optional (absent when no modules were
-// requested). Each module is loaded via finit_module(2); one that is already
-// loaded (a dependency loaded by an earlier line, or whose symbols a built-in
-// already provides) returns EEXIST and is treated as success. Any other failure
-// is returned and fails the run: the host only packs modules it found as .ko
-// files, so a hard failure here is a genuine load error, not a "built in" case.
+// loadModules loads the modules listed in test-modules.txt, one in-initramfs .ko
+// path per line in dependency order. The file is optional. A failure fails the
+// run: the host only packs modules it found, so this is a genuine load error.
 func loadModules() error {
 	raw, err := os.ReadFile("test-modules.txt")
 	if err != nil {

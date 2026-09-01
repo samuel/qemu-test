@@ -14,10 +14,9 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// writeModuleTree builds a synthetic modules tree under a temp dir: a modules.dep
-// (each entry "relpath: dep...") plus an empty .ko file for every path mentioned,
-// and an optional modules.builtin (canonical names, one per line). It returns the
-// tree dir.
+// writeModuleTree builds a synthetic modules tree: a modules.dep (each entry
+// "relpath: dep...") plus an empty .ko for every path mentioned, and an optional
+// modules.builtin.
 func writeModuleTree(t *testing.T, dep map[string]string, builtin []string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -182,10 +181,8 @@ func TestParseModinfoDepends(t *testing.T) {
 	}
 }
 
-// writeFakeKo writes a minimal but valid ELF64 object at path whose .modinfo
-// section declares the given dependencies, so koDepends can parse it without a
-// real kernel build. When the path has a compression suffix (.gz/.xz/.zst) the
-// ELF is compressed accordingly, mirroring a distro's compressed modules tree.
+// writeFakeKo writes a minimal ELF64 object whose .modinfo declares the given
+// dependencies, compressed when the path has a .gz/.xz/.zst suffix.
 func writeFakeKo(t *testing.T, path string, depends []string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -205,8 +202,8 @@ func writeFakeKo(t *testing.T, path string, depends []string) {
 	}
 }
 
-// fakeKoBytes builds the bytes of a minimal but valid ELF64 module object whose
-// .modinfo section declares the given dependencies.
+// fakeKoBytes builds a minimal but valid ELF64 object whose .modinfo section
+// declares the given dependencies.
 func fakeKoBytes(t *testing.T, depends []string) []byte {
 	t.Helper()
 	modinfo := []byte("license=GPL\x00depends=" + strings.Join(depends, ",") + "\x00")
@@ -248,8 +245,7 @@ func fakeKoBytes(t *testing.T, depends []string) []byte {
 	return buf.Bytes()
 }
 
-// gzipData, xzData, and zstdData return b compressed with the named codec, for
-// building synthetic compressed modules.
+// gzipData, xzData, and zstdData return b compressed with the named codec.
 func gzipData(t *testing.T, b []byte) []byte {
 	t.Helper()
 	var out bytes.Buffer
@@ -317,8 +313,8 @@ func TestResolveModulesNoModulesDepFromModinfo(t *testing.T) {
 }
 
 func TestResolveModulesNoModulesDepDegrade(t *testing.T) {
-	// No modules.dep and the .ko is not parseable as ELF: the module is still
-	// found by walking and loaded, just without auto-resolved dependencies.
+	// A .ko that is not parseable as ELF is still found and loaded, just without
+	// auto-resolved dependencies.
 	dir := t.TempDir()
 	ko := filepath.Join(dir, "kernel/usbcore.ko")
 	if err := os.MkdirAll(filepath.Dir(ko), 0o755); err != nil {
@@ -337,8 +333,7 @@ func TestResolveModulesNoModulesDepDegrade(t *testing.T) {
 }
 
 func TestKoDependsCompressed(t *testing.T) {
-	// koDepends reads .modinfo from an uncompressed .ko and transparently through
-	// gzip/xz/zstd compression — the latter two are how distro module trees ship.
+	// koDepends reads .modinfo through gzip/xz/zstd as well as uncompressed.
 	want := []string{"xhci_hcd", "usbcore"}
 	dir := t.TempDir()
 	for _, base := range []string{"m.ko", "m.ko.gz", "m.ko.xz", "m.ko.zst"} {
@@ -357,8 +352,8 @@ func TestKoDependsCompressed(t *testing.T) {
 }
 
 func TestResolveModulesNoModulesDepFromModinfoXz(t *testing.T) {
-	// The ppc64 bundle's shape: a tree of .ko.xz with no modules.dep. Dependency
-	// resolution must decompress each module to read its .modinfo depends=.
+	// The ppc64 bundle's shape: .ko.xz with no modules.dep, so each module must be
+	// decompressed to read its .modinfo depends=.
 	dir := t.TempDir()
 	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/host/xhci-pci.ko.xz"), []string{"xhci_hcd"})
 	writeFakeKo(t, filepath.Join(dir, "kernel/drivers/usb/host/xhci-hcd.ko.xz"), []string{"usbcore"})
@@ -380,9 +375,8 @@ func TestResolveModulesNoModulesDepFromModinfoXz(t *testing.T) {
 	}
 }
 
-// writeKmodIndex writes a kmod binary index at path mapping each key to a single
-// value, in the format readKmodIndex parses. The trie is uncompressed (no shared
-// prefixes), which is still a valid index.
+// writeKmodIndex writes a kmod binary index mapping each key to a single value.
+// The trie shares no prefixes, which is still valid.
 func writeKmodIndex(t *testing.T, path string, entries map[string]string) {
 	t.Helper()
 	type node struct {

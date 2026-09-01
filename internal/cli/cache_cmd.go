@@ -11,16 +11,15 @@ import (
 	"github.com/samuel/qemu-test/internal/cache"
 )
 
-// cacheCommand implements "qemu-test cache" — inspecting and pruning the on-disk
-// kernel/bundle download cache. It returns a process exit code (0 success, 1 IO
-// failure, 2 usage error).
+// cacheCommand implements "qemu-test cache": inspecting and pruning the on-disk
+// download cache. Returns a process exit code (0 success, 1 IO, 2 usage).
 func cacheCommand(args []string) int {
 	fs := flag.NewFlagSet("qemu-test cache", flag.ContinueOnError)
 	verbose := fs.Bool("v", false, "In list, also print each item's on-disk paths")
 	fs.Usage = cacheUsage(fs)
 
-	// The sub-subcommand is a leading bare word; flags follow it (e.g.
-	// "cache list -v"). A leading flag (e.g. "cache -h") applies to the default.
+	// The verb is a leading bare word, with flags after it ("cache list -v"); a
+	// leading flag applies to the default verb.
 	verb := "info"
 	rest := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -71,8 +70,7 @@ func cacheCommand(args []string) int {
 func cacheClear(dir string, targets []string) int {
 	var keys []string
 	for _, t := range targets {
-		// Accept either a cache key (as shown by "list") or a source URL; a
-		// downloaded entry's key is CacheKey(url), so map both forms to a key.
+		// Accept either a cache key or the source URL it was derived from.
 		keys = append(keys, t, cache.CacheKey(t))
 	}
 	removed, freed, err := cache.Clear(dir, keys...)
@@ -92,9 +90,8 @@ func cacheClear(dir string, targets []string) int {
 	return 0
 }
 
-// printCacheList writes the cache entries. The default is an aligned table keyed
-// by a short key prefix; verbose prints a per-item block with the full key, URL,
-// and on-disk paths.
+// printCacheList writes the cache entries as an aligned table, or as a per-item
+// block with the full key, URL, and paths when verbose.
 func printCacheList(entries []cache.Entry, verbose bool) error {
 	if len(entries) == 0 {
 		return nil
