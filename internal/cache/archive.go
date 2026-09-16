@@ -11,11 +11,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // ExtractArchiveAtomic extracts archivePath into a fresh temp dir under workDir,
 // writes a .extracted completion marker, then replaces dest with it atomically.
+// Extraction is serialized per dest so two processes resolving the same bundle
+// cannot clobber each other between the remove and rename steps.
 func ExtractArchiveAtomic(archivePath, dest, workDir string) error {
+	unlock, err := lockExtract(dest)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	tmp, err := os.MkdirTemp(workDir, "extract-*")
 	if err != nil {
 		return err
@@ -38,6 +47,25 @@ func ExtractArchiveAtomic(archivePath, dest, workDir string) error {
 		return err
 	}
 	return nil
+}
+
+// lockExtract takes an advisory exclusive lock on dest+".lock", serializing the
+// remove+rename swap for processes using the same dest. flock is released on
+// process exit even on a crash. The lock file is left in place (like the body
+// and sidecar) so a waiting peer never blocks on a recreated inode.
+func lockExtract(dest string) (func(), error) {
+	f, err := os.OpenFile(dest+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close() //nolint:errcheck // failed to lock; the fd is all we have to release
+		return nil, err
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck // the close below also releases the lock
+		_ = f.Close()                                   //nolint:errcheck // release the advisory lock
+	}, nil
 }
 
 // ExtractArchive extracts a tar or gzip-compressed tar (sniffed by magic) into

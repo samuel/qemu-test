@@ -64,7 +64,7 @@ selects files via "files" (glob -> dst). Globs use doublestar semantics: "*"
 matches within a path segment, "**" any depth. A dst ending in "/" is a
 directory: the matched path with the glob's fixed (non-wildcard) prefix removed
 is appended under it. A "." segment in the glob is a keep-anchor (rsync -R):
-only the part matched after it is kept, dropping everything before — e.g.
+only the part matched after it is kept, dropping everything before it, e.g.
 "usr/lib/modules/*/./**" drops the version dir. http(s) URLs are downloaded and
 cached; any other url value is read from the local filesystem.
 

@@ -149,8 +149,13 @@ func Main(args []string, embedFiles embed.FS) int {
 	if *flagTags != "" {
 		testBuildArgs = append(testBuildArgs, "-tags", *flagTags)
 	}
-	// Coverage runtime flags need an instrumented binary; pair with -out to get the profile back.
+	// Coverage runtime flags need an instrumented binary; pair with -out to get
+	// the profile back. A profile written anywhere but the guest share vanishes
+	// with the VM, so warn about that up front.
 	for _, ta := range testArgs {
+		if val, ok := strings.CutPrefix(ta, "-test.coverprofile="); ok && !strings.HasPrefix(val, "/out") {
+			fmt.Fprintf(os.Stderr, "Warning: -test.coverprofile %q writes outside the guest share; use -out <hostdir> and a path under /out (e.g. /out/cover.out) or the profile is lost\n", val)
+		}
 		if strings.HasPrefix(ta, "-test.coverprofile") || strings.HasPrefix(ta, "-test.covermode") {
 			testBuildArgs = append(testBuildArgs, "-cover")
 			break

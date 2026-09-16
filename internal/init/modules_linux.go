@@ -45,7 +45,7 @@ func loadModule(path string) error {
 	defer f.Close() //nolint:errcheck // read-only handle; the finit_module result is what matters
 	var flags int
 	if !strings.HasSuffix(path, ".ko") {
-		flags = moduleInitCompressedFile // .ko.gz/.xz/.zst — let the kernel decompress
+		flags = moduleInitCompressedFile // .ko.gz/.xz/.zst; let the kernel decompress
 	}
 	if err := unix.FinitModule(int(f.Fd()), "", flags); err != nil {
 		if errors.Is(err, unix.EEXIST) {

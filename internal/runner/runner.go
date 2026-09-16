@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"maps"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -425,31 +426,52 @@ func warnModuleMemory(totalBytes int64, mem string) {
 		return
 	}
 	if totalBytes*4 >= memBytes {
-		slog.Warn("packed kernel modules are large relative to guest RAM; the initramfs is unpacked into guest memory — consider raising -mem",
+		slog.Warn("packed kernel modules are large relative to guest RAM; the initramfs is unpacked into guest memory. Consider raising -mem",
 			"moduleBytes", totalBytes, "memBytes", memBytes)
 	}
 }
 
-// parseMemBytes parses a qemu -m value (bare MiB, or a B/K/M/G suffix) into
-// bytes, reporting false when it cannot be parsed.
+// unitMult returns the byte multiplier for a qemu -m unit letter.
+func unitMult(b byte) (int64, bool) {
+	switch b {
+	case 'b', 'B':
+		return 1, true
+	case 'k', 'K':
+		return 1 << 10, true
+	case 'm', 'M':
+		return 1 << 20, true
+	case 'g', 'G':
+		return 1 << 30, true
+	case 't', 'T':
+		return 1 << 40, true
+	}
+	return 0, false
+}
+
+// parseMemBytes parses a qemu -m value (bare MiB, or a B/K/M/G/T suffix with an
+// optional binary "i" marker such as MiB or Gi) into bytes, reporting false when
+// it cannot be parsed.
 func parseMemBytes(mem string) (int64, bool) {
 	s := strings.TrimSpace(mem)
 	if s == "" {
 		return 0, false
 	}
 	mult := int64(1 << 20) // qemu's default unit is MiB
-	switch s[len(s)-1] {
-	case 'b', 'B':
-		mult, s = 1, s[:len(s)-1]
-	case 'k', 'K':
-		mult, s = 1<<10, s[:len(s)-1]
-	case 'm', 'M':
-		mult, s = 1<<20, s[:len(s)-1]
-	case 'g', 'G':
-		mult, s = 1<<30, s[:len(s)-1]
+	if m, ok := unitMult(s[len(s)-1]); ok {
+		mult, s = m, s[:len(s)-1]
+	}
+	// An optional binary "i" marker (Mi, GiB, Ki) follows the unit letter and
+	// consumes it next.
+	if n := len(s); n > 1 && (s[n-1] == 'i' || s[n-1] == 'I') {
+		s = s[:n-1]
+		m, ok := unitMult(s[len(s)-1])
+		if !ok {
+			return 0, false
+		}
+		mult, s = m, s[:len(s)-1]
 	}
 	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-	if err != nil || n < 0 {
+	if err != nil || n < 0 || n > math.MaxInt64/mult {
 		return 0, false
 	}
 	return n * mult, true

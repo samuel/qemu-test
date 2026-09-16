@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"time"
 )
@@ -146,23 +145,59 @@ func runTests() error {
 	return runReaped(cmd)
 }
 
-// testEnvironment builds the environment for the /tests binary. PID 1 inherits a
-// near-empty environment, so it fills in defaults for PATH/HOME/TMPDIR when they
-// are absent. The user's -env vars are appended last, so a duplicate key resolves
-// to theirs.
+// testEnvironment builds the environment for the /tests binary with each key at
+// most once, so os/exec's last-value-wins dedup of duplicate Cmd.Env keys never
+// has a duplicate to resolve and the user's -env values always win. User entries
+// come first, then inherited initramfs values and defaults (PATH/HOME/TMPDIR,
+// since PID 1 wakes up with a near-empty environment) for keys not yet set.
 func testEnvironment(user []string) []string {
-	env := os.Environ()
+	env := dedupeVars(user)
+	set := make(map[string]bool, len(env))
+	for _, kv := range env {
+		set[varKey(kv)] = true
+	}
+	for _, kv := range os.Environ() {
+		if key := varKey(kv); !set[key] {
+			env = append(env, kv)
+			set[key] = true
+		}
+	}
 	for _, def := range []string{
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME=/root",
 		"TMPDIR=/tmp",
 	} {
-		key := def[:strings.IndexByte(def, '=')+1]
-		if !slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, key) }) {
+		if key := varKey(def); !set[key] {
 			env = append(env, def)
+			set[key] = true
 		}
 	}
-	return append(env, user...)
+	return env
+}
+
+// dedupeVars keeps the last value for a repeated KEY=VALUE, in first-encountered
+// order, so a repeated -env flag is deterministic up front rather than left to
+// whichever duplicate os/exec's dedup happens to keep.
+func dedupeVars(vars []string) []string {
+	out := make([]string, 0, len(vars))
+	pos := make(map[string]int)
+	for _, kv := range vars {
+		if i, ok := pos[varKey(kv)]; ok {
+			out[i] = kv
+			continue
+		}
+		pos[varKey(kv)] = len(out)
+		out = append(out, kv)
+	}
+	return out
+}
+
+// varKey returns the variable name portion of a KEY=VALUE string.
+func varKey(kv string) string {
+	if before, _, ok := strings.Cut(kv, "="); ok {
+		return before
+	}
+	return kv
 }
 
 func writeSys(path string, data []byte) error {

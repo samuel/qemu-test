@@ -1,5 +1,5 @@
-// Package boot resolves what to boot — the kernel plus, when a bundle supplies
-// them, a matching modules tree and device tree — from the arch defaults and the
+// Package boot resolves what to boot (the kernel plus, when a bundle supplies
+// them, a matching modules tree and device tree) from the arch defaults and the
 // -kernel/-bundle overrides.
 package boot
 
@@ -102,9 +102,9 @@ func resolveBareKernel(ctx context.Context, src string, refresh bool) (string, e
 	return cache.FetchKernel(ctx, nil, src, cacheDir, refresh)
 }
 
-// resolveBundle resolves a boot bundle from src — an http(s) URL (fetched,
+// resolveBundle resolves a boot bundle from src, an http(s) URL (fetched,
 // cached, extracted), a local tarball (extracted into workDir), or a local
-// directory — into the kernel/modules/dtb paths it carries.
+// directory, into the kernel/modules/dtb paths it carries.
 func resolveBundle(ctx context.Context, a arch.Arch, src string, refresh bool, workDir string) (Env, error) {
 	var dir string
 	if cache.IsHTTPURL(src) {

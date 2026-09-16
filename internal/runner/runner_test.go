@@ -91,3 +91,30 @@ func TestQuoteCommand(t *testing.T) {
 		t.Error("quoteCommand should not quote args without whitespace")
 	}
 }
+
+func TestParseMemBytes(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int64
+		ok   bool
+	}{
+		{"", 0, false},
+		{"1024", 1024 << 20, true}, // bare value defaults to MiB
+		{"512M", 512 << 20, true},
+		{"2G", 2 << 30, true},
+		{"1T", 1 << 40, true},
+		{"2Gi", 2 << 30, true}, // optional binary marker
+		{"128Mi", 128 << 20, true},
+		{"128MiB", 128 << 20, true},
+		{"128Mib", 128 << 20, true},
+		{"512k", 512 << 10, true},
+		{"65536b", 65536, true},
+		{"junk", 0, false},
+		{"-1G", 0, false},
+	} {
+		got, ok := parseMemBytes(tc.in)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("parseMemBytes(%q) = %d, %v; want %d, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

@@ -80,7 +80,7 @@ func Resolve(modulesDir string, names []string) (load []Module, skipped []string
 	}
 
 	// Canonical names are derived from the .ko base name, so distinct names in
-	// order always have distinct base names — packed modules cannot collide.
+	// order always have distinct base names; packed modules cannot collide.
 	for _, name := range order {
 		rel := index[name]
 		base := filepath.Base(rel)

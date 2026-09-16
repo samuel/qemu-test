@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +51,47 @@ func TestPrefixedLineWriterFreshLine(t *testing.T) {
 	}
 	if got, want := buf.String(), "P def\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// envOf returns the value of the first KEY= in env, matching the Go runtime's
+// first-occurrence-wins resolution.
+func envOf(env []string, key string) (string, bool) {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, key+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// A -env value must win over inherited (host) and default values even though it
+// is first in the list: the runtime keeps the first occurrence of a key.
+func TestTestEnvironmentUserOverrides(t *testing.T) {
+	env := testEnvironment([]string{"FOO=bar", "PATH=/custom"})
+	if got, ok := envOf(env, "FOO"); !ok || got != "bar" {
+		t.Fatalf("FOO = %q, %v; want \"bar\", true", got, ok)
+	}
+	// PATH exists in the host environment and as a default; the user's value wins.
+	if got, ok := envOf(env, "PATH"); !ok || got != "/custom" {
+		t.Fatalf("PATH = %q, %v; want \"/custom\", true", got, ok)
+	}
+}
+
+// A repeated -env key resolves to the last value, whichever order the entries
+// take after the user list is deduplicated.
+func TestTestEnvironmentRepeatedKey(t *testing.T) {
+	env := testEnvironment([]string{"FOO=first", "FOO=last"})
+	if got, ok := envOf(env, "FOO"); !ok || got != "last" {
+		t.Fatalf("FOO = %q, %v; want \"last\", true", got, ok)
+	}
+}
+
+// Defaults fill in only keys neither the user nor the inherited environment set,
+// and a user-supplied key must remain the only surviving value.
+func TestTestEnvironmentDefaultsNotUsed(t *testing.T) {
+	env := testEnvironment([]string{"HOME=/custom"})
+	if got, ok := envOf(env, "HOME"); !ok || got != "/custom" {
+		t.Fatalf("HOME = %q, %v; want \"/custom\", true", got, ok)
 	}
 }

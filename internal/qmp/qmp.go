@@ -41,6 +41,13 @@ func Dial(path string, timeout time.Duration) (*Conn, error) {
 
 	q := &Conn{conn: conn, w: bufio.NewWriter(conn)}
 	r := bufio.NewReader(conn)
+	// Bound the handshake reads by the same deadline as the dial: a peer that
+	// accepts the connection but never speaks must not block the run past its
+	// budget. Cleared once command mode is entered.
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("set read deadline: %w", err)
+	}
 	// The server sends a greeting line on connect.
 	if _, err := r.ReadBytes('\n'); err != nil {
 		_ = conn.Close()
@@ -54,6 +61,10 @@ func Dial(path string, timeout time.Duration) (*Conn, error) {
 	if _, err := r.ReadBytes('\n'); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("read qmp capabilities reply: %w", err)
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("clear read deadline: %w", err)
 	}
 	go q.readLoop(r)
 	return q, nil

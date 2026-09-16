@@ -14,8 +14,8 @@ import (
 //
 // It owns the wait loop rather than letting cmd.Wait do the waiting because the
 // two would race to reap /tests and the loser would see ECHILD. cmd.Wait is still
-// called afterwards, solely to drain the output copier goroutines — which it does
-// even when its own wait fails — so the test output is flushed before the verdict.
+// called afterwards, solely to drain the output copier goroutines, which it does
+// even when its own wait fails, so the test output is flushed before the verdict.
 func runReaped(cmd *exec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
