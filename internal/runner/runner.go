@@ -1,13 +1,15 @@
-// Package runner builds the guest initramfs (init + the compiled test binary +
-// the requested kernel modules), launches the architecture's qemu binary, and
-// parses the serial console for the test verdict.
+// Package runner builds the guest initramfs (init + the binary to run + the
+// requested kernel modules), launches the architecture's qemu binary, and parses
+// the serial console for the binary's output and exit status.
 package runner
 
 import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -28,13 +30,10 @@ import (
 	"github.com/samuel/qemu-test/internal/arch"
 	"github.com/samuel/qemu-test/internal/boot"
 	"github.com/samuel/qemu-test/internal/builder"
+	"github.com/samuel/qemu-test/internal/cache"
 	"github.com/samuel/qemu-test/internal/modules"
 	"github.com/samuel/qemu-test/internal/qmp"
 )
-
-// ErrNoTests reports that the target package has no test files. Treated like
-// `go test`: a notice, exit 0.
-var ErrNoTests = errors.New("no test files")
 
 // Options carries the inputs for a single VM run, assembled from the flags.
 type Options struct {
@@ -42,12 +41,13 @@ type Options struct {
 	KernelOverride string
 	BundleOverride string        // -bundle path or URL (kernel + modules + dtb)
 	Refresh        bool          // re-validate a URL kernel or bundle against the remote
-	Modules        []string      // kernel modules to load in the guest before tests
+	Modules        []string      // kernel modules to load in the guest before the binary runs
 	Mem            string        // guest RAM (-mem), used for the module-size guardrail
-	TestPath       string        // Go package to test
-	TestBuildArgs  []string      // build flags for the test binary
-	TestArgs       []string      // argv passed to the test binary in the guest
-	TestEnv        []string      // KEY=VALUE env for the test binary
+	Binary         string        // host path of the static Linux executable to run in the guest
+	Args           []string      // argv passed to the binary
+	Env            []string      // KEY=VALUE env for the binary
+	WorkDir        string        // guest working directory for the binary; "" leaves it at /
+	Shares         []Share       // host directories shared into the guest
 	QEMUArgs       []string      // user/resource qemu args, before the arch boot args
 	KVM            bool          // enable KVM acceleration
 	Keep           bool          // keep the temp dir and log the qemu command line
@@ -123,10 +123,11 @@ func findFirmware(qemuBinary, name string) (string, error) {
 	return "", fmt.Errorf("firmware %q not found in %v; install it or pass it with -qemu.arg \"-bios /path/to/%s\"", name, dirs, name)
 }
 
-// Run builds the guest initramfs, boots qemu, and reports the test verdict: nil
-// on pass, "tests failed" on a reported failure, or a noVerdictError for a
-// boot/init/qemu failure or a timeout.
-func Run(ctx context.Context, o Options) error {
+// Run packs the binary into a guest initramfs, boots qemu, and returns the
+// binary's exit code. An error means the binary produced none: a host-side
+// failure, a guest setup failure, or a noVerdictError for a boot/qemu failure,
+// timeout, or interrupt.
+func Run(ctx context.Context, o Options) (int, error) {
 	if o.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
@@ -136,7 +137,7 @@ func Run(ctx context.Context, o Options) error {
 	a := o.Arch
 	// Fail fast (before the expensive build) if the arch's emulator is missing.
 	if _, err := exec.LookPath(a.QEMUBinary); err != nil {
-		return fmt.Errorf("qemu binary %q not found for arch %s (install it via your package manager): %w", a.QEMUBinary, a.Name, err)
+		return 0, fmt.Errorf("qemu binary %q not found for arch %s (install it via your package manager): %w", a.QEMUBinary, a.Name, err)
 	}
 
 	// Locate the arch's firmware blob (also fail fast), unless the user supplied
@@ -145,13 +146,20 @@ func Run(ctx context.Context, o Options) error {
 	if a.Firmware != "" && !slices.Contains(o.QEMUArgs, "-bios") {
 		var err error
 		if firmwarePath, err = findFirmware(a.QEMUBinary, a.Firmware); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
+	bin, err := os.Open(o.Binary)
+	if err != nil {
+		return 0, err
+	}
+	//nolint:errcheck // read-only file; nothing to flush on close.
+	defer bin.Close()
+
 	tempPath, err := os.MkdirTemp("", "qemu-test-")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() {
 		if o.Keep {
@@ -162,15 +170,6 @@ func Run(ctx context.Context, o Options) error {
 			slog.Error("Failed to remove temp dir", "path", tempPath, "err", err)
 		}
 	}()
-	tempRoot, err := os.OpenRoot(tempPath)
-	if err != nil {
-		return err
-	}
-	//nolint:errcheck // read-only os.Root dir handle; nothing is buffered to flush on close.
-	defer tempRoot.Close()
-	if err := copyEmbedFS(tempRoot, o.EmbedFiles); err != nil {
-		return fmt.Errorf("failed to copy embed files: %w", err)
-	}
 
 	// Resolve the kernel before the slower guest build so a bad -kernel/-bundle
 	// path, URL, or layout fails fast.
@@ -182,34 +181,49 @@ func Run(ctx context.Context, o Options) error {
 		WorkDir:        tempPath,
 	})
 	if err != nil {
-		return err
+		return 0, err
+	}
+
+	shares := normalizeShares(o.Shares)
+	moduleNames := o.Modules
+	if len(shares) != 0 {
+		// The default bundles build 9p as modules, so a share cannot mount until
+		// the filesystem and its virtio transport are loaded. The resolver pulls in
+		// their dependencies and skips them where 9p is built in.
+		moduleNames = append(slices.Clone(moduleNames), "9p", "9pnet_virtio")
 	}
 
 	extraFiles := make(map[string]io.Reader)
-	extraFiles["test-args.txt"] = bytes.NewReader([]byte(strings.Join(o.TestArgs, "\n")))
-	// KEY=VALUE lines the guest appends to the test binary's environment.
-	extraFiles["test-env.txt"] = bytes.NewReader([]byte(strings.Join(o.TestEnv, "\n")))
-	// In-guest .ko paths in dependency order, loaded before the tests run.
-	modPaths, err := addModules(o, env.ModulesPath, extraFiles)
+	extraFiles["test-args.txt"] = strings.NewReader(strings.Join(o.Args, "\n"))
+	// KEY=VALUE lines the guest adds to the binary's environment.
+	extraFiles["test-env.txt"] = strings.NewReader(strings.Join(o.Env, "\n"))
+	extraFiles["test-cwd.txt"] = strings.NewReader(o.WorkDir)
+	extraFiles["test-shares.txt"] = strings.NewReader(shareList(shares))
+	// In-guest .ko paths in dependency order, loaded before the binary runs.
+	modPaths, err := addModules(moduleNames, o.Mem, env.ModulesPath, extraFiles)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	extraFiles["test-modules.txt"] = bytes.NewReader([]byte(strings.Join(modPaths, "\n")))
+	extraFiles["test-modules.txt"] = strings.NewReader(strings.Join(modPaths, "\n"))
+
+	initBin, err := buildInit(ctx, a.GOARCH, o.EmbedFiles, tempPath)
+	if err != nil {
+		return 0, err
+	}
 
 	ifs, err := os.Create(filepath.Join(tempPath, "initramfs.gz"))
 	if err != nil {
-		return err
+		return 0, err
 	}
-	//nolint:errcheck // buildTests' checked gzip close flushes the data. This close only releases the fd on error paths.
+	//nolint:errcheck // writeInitramfs' checked gzip close flushes the data. This close only releases the fd on error paths.
 	defer ifs.Close()
 	slog.Debug("Building initramfs")
-	target := builder.Target{GOOS: "linux", GOARCH: a.GOARCH}
-	if err := buildTests(ctx, ifs, target, filepath.Join(tempPath, "internal", "init"), o.TestPath, o.TestBuildArgs, extraFiles); err != nil {
-		return err
+	if err := writeInitramfs(ifs, initBin, bin, extraFiles); err != nil {
+		return 0, err
 	}
 
 	qmpSock := filepath.Join(tempPath, "qmp.sock")
-	qemuArgs := append(o.QEMUArgs, a.BootArgs(arch.BootConfig{
+	qemuArgs := slices.Concat(o.QEMUArgs, shareQEMUArgs(shares), a.BootArgs(arch.BootConfig{
 		KernelPath:   env.KernelPath,
 		DTBPath:      env.DTBPath,
 		FirmwarePath: firmwarePath,
@@ -218,18 +232,12 @@ func Run(ctx context.Context, o Options) error {
 		KVM:          o.KVM,
 		UserSetCPU:   slices.Contains(o.QEMUArgs, "-cpu"),
 		ExtraCmdline: o.ExtraCmdline,
-	})...)
+	}))
 	slog.Debug("Running qemu", "binary", a.QEMUBinary, "args", qemuArgs)
 	if o.Keep {
 		slog.Info("qemu command (-keep)", "cmdline", quoteCommand(a.QEMUBinary, qemuArgs))
 	}
 	qcmd := exec.CommandContext(ctx, a.QEMUBinary, qemuArgs...)
-	var result int
-	const (
-		resultUnknown = iota
-		resultPass
-		resultFail
-	)
 	// Set once the QMP handshake completes. The guest forwards QMP commands by
 	// printing "[QMP]<json>", which tests only do well after boot.
 	var qmpConn atomic.Pointer[qmp.Conn]
@@ -245,37 +253,37 @@ func Run(ctx context.Context, o Options) error {
 			}
 		}
 	}
+	stdout := &streamWriter{w: os.Stdout, onQMP: func(cmd string) {
+		q := qmpConn.Load()
+		if q == nil {
+			slog.Warn("dropping [QMP] command: qmp not connected", "cmd", cmd)
+		} else if err := q.Send(cmd); err != nil {
+			slog.Error("forward qmp command", "err", err)
+		}
+	}}
+	stderr := &streamWriter{w: os.Stderr}
+	var v verdict
 	lp := &logParser{
 		fn: func(key, line []byte) error {
 			recordTail(line)
-			if len(key) != 0 {
-				switch k := string(key); k {
-				case "STDOUT":
-					if cmd, ok := bytes.CutPrefix(line, []byte("[QMP]")); ok {
-						if q := qmpConn.Load(); q != nil {
-							if err := q.Send(string(bytes.TrimRight(cmd, "\n"))); err != nil {
-								slog.Error("forward qmp command", "err", err)
-							}
-						} else {
-							slog.Warn("dropping [QMP] command: qmp not connected", "cmd", string(bytes.TrimRight(cmd, "\n")))
-						}
-						return nil
-					}
-					_, _ = os.Stdout.Write(line)
-				case "STDERR":
-					_, _ = os.Stderr.Write(line)
-				case "PASS":
-					result = resultPass
-				case "FAIL":
-					result = resultFail
-				default:
-					// Never return an error from this callback: it would propagate
-					// out of lp.Write, stop the os/exec copier draining qemu's
-					// stdout, and hang qemu until the deadline.
+			if len(key) == 0 {
+				slog.Debug(string(line))
+				return nil
+			}
+			// Never return an error from this callback: it would propagate out
+			// of lp.Write, stop the os/exec copier draining qemu's stdout, and
+			// hang qemu until the deadline.
+			switch k := string(key); k {
+			case "STDOUT", "STDOUT-":
+				stdout.record(line, k == "STDOUT-")
+			case "STDERR", "STDERR-":
+				stderr.record(line, k == "STDERR-")
+			case "WARN":
+				slog.Warn("guest: " + string(bytes.TrimRight(line, "\r\n")))
+			default:
+				if !v.record(k, line) {
 					slog.Warn("unknown log key", "key", k, "line", string(bytes.TrimRight(line, "\n")))
 				}
-			} else {
-				slog.Debug(string(line))
 			}
 			return nil
 		},
@@ -283,7 +291,7 @@ func Run(ctx context.Context, o Options) error {
 	qcmd.Stdout = lp
 	qcmd.Stderr = lp
 	if err := qcmd.Start(); err != nil {
-		return fmt.Errorf("qemu start: %w", err)
+		return 0, fmt.Errorf("qemu start: %w", err)
 	}
 	// Connect the QMP control channel while the VM boots. Best-effort: a failure
 	// only disables QMP-driven tests, which then skip or time out.
@@ -291,36 +299,70 @@ func Run(ctx context.Context, o Options) error {
 		slog.Error("connect qmp", "err", err)
 	} else {
 		qmpConn.Store(q)
-		//nolint:errcheck // QMP is best-effort; a close error cannot affect the test result.
+		//nolint:errcheck // QMP is best-effort; a close error cannot affect the result.
 		defer q.Close()
 	}
 	waitErr := qcmd.Wait()
 	// Process any final line buffered without a trailing newline. Wait has already
 	// joined the output copier goroutines, so nothing races here.
 	if err := lp.flush(); err != nil {
-		return err
+		return 0, err
 	}
+	stdout.flush()
 	if waitErr != nil {
-		// A deadline kill surfaces as a generic Wait error (qemu was SIGKILLed);
-		// report the timeout instead so the cause is clear.
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return &noVerdictError{msg: fmt.Sprintf("timed out after %s", o.Timeout), tail: tail, err: ctx.Err()}
+		// A context kill surfaces as a generic Wait error (qemu was SIGKILLed);
+		// report the cause instead.
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			return 0, &noVerdictError{msg: fmt.Sprintf("timed out after %s", o.Timeout), tail: tail, err: ctx.Err()}
+		case ctx.Err() != nil:
+			return 0, &noVerdictError{msg: "interrupted", tail: tail, err: ctx.Err()}
 		}
-		return &noVerdictError{msg: fmt.Sprintf("qemu failed: %v", waitErr), tail: tail, err: waitErr}
+		return 0, &noVerdictError{msg: fmt.Sprintf("qemu failed: %v", waitErr), tail: tail, err: waitErr}
 	}
 
-	switch result {
-	case resultPass:
-		return nil
-	case resultFail:
-		return errors.New("tests failed")
+	switch {
+	case v.failure != "":
+		return 0, errors.New("guest: " + v.failure)
+	case v.exited:
+		return v.code, nil
 	}
 	// A clean qemu exit with no verdict means the guest powered off without
-	// printing [TESTS:PASS]/[TESTS:FAIL]: a boot or init failure.
-	return &noVerdictError{msg: "guest did not report a pass/fail verdict (boot or init failure)", tail: tail}
+	// printing [TESTS:EXIT]/[TESTS:FAIL]: a boot or init failure.
+	return 0, &noVerdictError{msg: "guest did not report an exit status (boot or init failure)", tail: tail}
 }
 
-// noVerdictError reports a run that produced no pass/fail verdict. It carries the
+// verdict is the outcome the guest init reports on the console: the binary's
+// exit code ([TESTS:EXIT] n), or why it produced none ([TESTS:FAIL] reason).
+type verdict struct {
+	exited  bool
+	code    int
+	failure string
+}
+
+// record applies a verdict line, reporting false when key is not a verdict key.
+func (v *verdict) record(key string, line []byte) bool {
+	text := strings.TrimSpace(string(line))
+	switch key {
+	case "EXIT":
+		code, err := strconv.Atoi(text)
+		if err != nil {
+			v.failure = fmt.Sprintf("malformed exit status %q", text)
+			return true
+		}
+		v.exited, v.code = true, code
+	case "FAIL":
+		if text == "" {
+			text = "failed"
+		}
+		v.failure = text
+	default:
+		return false
+	}
+	return true
+}
+
+// noVerdictError reports a run in which the guest reported no verdict. It carries the
 // captured console tail and unwraps to the underlying cause, so a timeout still
 // matches context.DeadlineExceeded.
 type noVerdictError struct {
@@ -387,13 +429,13 @@ func copyEmbedFS(out *os.Root, efs embed.FS) error {
 	})
 }
 
-// addModules resolves the requested -module names against the bundle's modules
+// addModules resolves the requested module names against the bundle's modules
 // tree and packs each resulting .ko into extraFiles at the initramfs root, by
 // basename, returning the in-guest names in dependency order. Flat at the root
 // because BuildInitramfs emits only regular files and the kernel's unpacker does
 // not create parent dirs; modules.Resolve guarantees unique basenames.
-func addModules(o Options, modulesDir string, extraFiles map[string]io.Reader) ([]string, error) {
-	load, skipped, err := modules.Resolve(modulesDir, o.Modules)
+func addModules(names []string, mem, modulesDir string, extraFiles map[string]io.Reader) ([]string, error) {
+	load, skipped, err := modules.Resolve(modulesDir, names)
 	if err != nil {
 		return nil, err
 	}
@@ -413,7 +455,7 @@ func addModules(o Options, modulesDir string, extraFiles map[string]io.Reader) (
 		slog.Debug("packing module", "name", m.Name, "file", m.Base, "bytes", len(data))
 	}
 	if total > 0 {
-		warnModuleMemory(total, o.Mem)
+		warnModuleMemory(total, mem)
 	}
 	return guestNames, nil
 }
@@ -477,28 +519,78 @@ func parseMemBytes(mem string) (int64, bool) {
 	return n * mult, true
 }
 
-func buildTests(ctx context.Context, out io.Writer, target builder.Target, initSrcPath, testPath string, testBuildArgs []string, extraFiles map[string]io.Reader) error {
-	initBuf := &bytes.Buffer{}
-	if err := builder.GoBuild(ctx, initBuf, target, initSrcPath); err != nil {
-		return fmt.Errorf("failed to build init: %w", err)
-	}
-	testBuf := &bytes.Buffer{}
-	if err := builder.GoBuildTest(ctx, testBuf, target, testPath, testBuildArgs...); err != nil {
-		return err
-	}
-	// With no test files `go test -c` writes a notice instead of an ELF binary.
-	// Catch that here rather than packing a /tests the guest cannot exec.
-	if !bytes.HasPrefix(testBuf.Bytes(), []byte("\x7fELF")) {
-		return ErrNoTests
+// buildInit returns the guest init compiled for goarch. The embedded source is
+// copied into workDir and built there, so the build works from any directory;
+// the result is cached by arch and source hash, since each `go test -exec`
+// package run is a separate invocation.
+func buildInit(ctx context.Context, goarch string, efs embed.FS, workDir string) ([]byte, error) {
+	var cachePath string
+	if dir, err := cache.CacheDir(); err != nil {
+		slog.Debug("init cache unavailable", "err", err)
+	} else if key, err := initKey(goarch, efs); err != nil {
+		return nil, err
+	} else {
+		cachePath = filepath.Join(dir, key+cache.InitExt)
+		if b, err := os.ReadFile(cachePath); err == nil {
+			return b, nil
+		}
 	}
 
+	root, err := os.OpenRoot(workDir)
+	if err != nil {
+		return nil, err
+	}
+	//nolint:errcheck // os.Root dir handle; nothing is buffered to flush on close.
+	defer root.Close()
+	if err := copyEmbedFS(root, efs); err != nil {
+		return nil, fmt.Errorf("failed to copy embed files: %w", err)
+	}
+	slog.Debug("Building init", "goarch", goarch)
+	var buf bytes.Buffer
+	target := builder.Target{GOOS: "linux", GOARCH: goarch}
+	if err := builder.GoBuild(ctx, &buf, target, filepath.Join(workDir, "internal", "init")); err != nil {
+		return nil, fmt.Errorf("failed to build init: %w", err)
+	}
+	if cachePath != "" {
+		if err := cache.WriteFileAtomic(cachePath, buf.Bytes()); err != nil {
+			slog.Warn("cache init", "err", err)
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+// initKey hashes the target arch and the embedded init source into a cache key.
+func initKey(goarch string, efs embed.FS) (string, error) {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "%s\n", goarch)
+	err := fs.WalkDir(efs, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := efs.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(h, "%s %d\n", path, len(b))
+		_, _ = h.Write(b)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// writeInitramfs writes the gzipped initramfs: init, the binary as /tests, and
+// the extra files, all at the root.
+func writeInitramfs(out io.Writer, initBin []byte, binary io.Reader, extraFiles map[string]io.Reader) error {
 	w := gzip.NewWriter(out)
-	//nolint:errcheck // After success build the writer is closed and error is checked. This covers the failure paths.
+	//nolint:errcheck // After a successful build the writer is closed and the error checked. This covers the failure paths.
 	defer w.Close()
 
 	files := map[string]io.Reader{
-		"init":  initBuf,
-		"tests": testBuf,
+		"init":  bytes.NewReader(initBin),
+		"tests": binary,
 	}
 	maps.Copy(files, extraFiles)
 	sizes, err := builder.SizesFromReaders(files)

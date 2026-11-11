@@ -23,17 +23,24 @@ func (f *MultiStringFlag) Set(value string) error {
 	return nil
 }
 
-// usage prints the help message for the main command.
+// usage prints the help message for the default command.
 func usage(fs *flag.FlagSet) {
 	out := fs.Output()
-	_, _ = fmt.Fprint(out, `qemu-test runs a Go package's tests inside a freshly-booted QEMU VM.
+	_, _ = fmt.Fprint(out, `qemu-test runs a static Linux executable inside a freshly-booted QEMU VM and
+exits with its exit code. It is built to be the -exec program of go test.
 
 Usage:
-  qemu-test [flags] <package> [test args...]
+  qemu-test [flags] <binary> [args...]
+  go test -exec "qemu-test [flags]" [go test args...]
+
+The guest architecture is read from the binary. Flags may also be supplied in
+the QEMU_TEST_FLAGS environment variable.
 
 Commands:
-  cache    Manage the kernel/bundle download cache (info, list, clear, dir)
-  bundle   Build a boot bundle (.tgz) from a JSON config
+  test           Run go test with test binaries executed in a VM (sets GOOS/GOARCH)
+  install-exec   Symlink go_linux_<arch>_exec so cross-compiled go test runs in a VM
+  cache          Manage the kernel/bundle download cache (info, list, clear, dir)
+  bundle         Build a boot bundle (.tgz) from a JSON config
   Run "qemu-test <command> -h" for command-specific help.
 
 Flags:
@@ -41,19 +48,17 @@ Flags:
 	fs.PrintDefaults()
 	_, _ = fmt.Fprint(out, `
 Examples:
-  qemu-test ./tests
-  qemu-test -test.run TestFoo -test.v -v ./tests
-  qemu-test -env KEY=value -env OTHER=1 ./tests
-  qemu-test -kvm on ./tests
-  qemu-test -arch arm64 -kernel https://example.com/arm64/vmlinuz ./tests
-  qemu-test -kernel https://example.com/vmlinuz -refresh ./tests
-  qemu-test -arch arm64 -bundle https://example.com/arm64-boot.tgz -module xhci_pci ./tests
-  qemu-test -bundle ./boot -module xhci_pci ./tests
-  qemu-test -append "loglevel=7 quiet" ./tests
-  qemu-test -keep -v ./tests
-  qemu-test -qemu.device qemu-xhci,id=xhci ./tests
-  qemu-test -qemu.arg "-drive if=none,id=d0,file=disk.img,format=raw" ./tests
-  qemu-test -out ./cov ./tests -test.coverprofile=/out/cover.out
+  GOOS=linux go test -exec qemu-test ./...
+  GOOS=linux GOARCH=arm64 go test -exec "qemu-test -module xhci_pci -qemu.device qemu-xhci" ./pkg
+  GOOS=linux go test -exec "qemu-test -env KEY=value" -run TestFoo -v ./pkg
+  GOOS=linux go test -exec qemu-test -coverprofile cover.out ./pkg
+  qemu-test test -arch s390x ./...
+  qemu-test ./pkg.test -test.run TestFoo -test.v
+  qemu-test -kernel https://example.com/vmlinuz -refresh ./pkg.test
+  qemu-test -bundle ./boot -module xhci_pci ./pkg.test
+  qemu-test -append "loglevel=7 quiet" -keep -v ./pkg.test
+  qemu-test -qemu.arg "-drive if=none,id=d0,file=disk.img,format=raw" ./pkg.test
+  qemu-test -share ./out:/out ./pkg.test
 `)
 }
 

@@ -6,56 +6,30 @@ import (
 	"testing"
 )
 
-func TestPrefixedLineWriterFreshLine(t *testing.T) {
-	var buf bytes.Buffer
-	w := &prefixedLineWriter{w: &buf, prefix: "P "}
-
-	// A write without a trailing newline leaves the writer mid-line.
-	if _, err := w.Write([]byte("abc")); err != nil {
-		t.Fatalf("Write: %v", err)
+func TestRecordWriter(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"line\n", "[TESTS:OUT] line\n"},
+		{"partial", "[TESTS:OUT-] partial\n"},
+		{"a\nb\n", "[TESTS:OUT] a\n[TESTS:OUT] b\n"},
+		{"a\nrest", "[TESTS:OUT] a\n[TESTS:OUT-] rest\n"},
+		{"\n", "[TESTS:OUT] \n"},
 	}
-	if !w.pre {
-		t.Fatal("expected mid-line (pre=true) after un-terminated write")
-	}
-
-	// freshLine terminates the pending line and clears the mid-line state.
-	if err := w.freshLine(); err != nil {
-		t.Fatalf("freshLine: %v", err)
-	}
-	if w.pre {
-		t.Fatal("freshLine should clear pre")
-	}
-	if got, want := buf.String(), "P abc\n"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-
-	// freshLine when not mid-line is a no-op.
-	buf.Reset()
-	if err := w.freshLine(); err != nil {
-		t.Fatalf("freshLine (no-op): %v", err)
-	}
-	if buf.Len() != 0 {
-		t.Fatalf("freshLine should be a no-op when not mid-line, wrote %q", buf.String())
-	}
-
-	// A newline-terminated write does not leave the writer mid-line.
-	buf.Reset()
-	if _, err := w.Write([]byte("def\n")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if w.pre {
-		t.Fatal("expected not mid-line (pre=false) after newline-terminated write")
-	}
-	if err := w.freshLine(); err != nil {
-		t.Fatalf("freshLine: %v", err)
-	}
-	if got, want := buf.String(), "P def\n"; got != want {
-		t.Fatalf("got %q, want %q", got, want)
+	for _, c := range cases {
+		var buf bytes.Buffer
+		w := &recordWriter{w: &buf, key: "OUT"}
+		n, err := w.Write([]byte(c.in))
+		if err != nil || n != len(c.in) {
+			t.Errorf("Write(%q) = %d, %v", c.in, n, err)
+		}
+		if got := buf.String(); got != c.want {
+			t.Errorf("Write(%q) wrote %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
-// envOf returns the value of the first KEY= in env, matching the Go runtime's
-// first-occurrence-wins resolution.
 func envOf(env []string, key string) (string, bool) {
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, key+"="); ok {

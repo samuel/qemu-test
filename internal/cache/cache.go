@@ -25,6 +25,9 @@ const (
 // enumerating the cache.
 const BuiltBundleExt = ".tgz"
 
+// InitExt is the suffix of a compiled guest init, cached as <sha256>.init.
+const InitExt = ".init"
+
 // IsHTTPURL reports whether s is an http(s) URL rather than a local path.
 func IsHTTPURL(s string) bool {
 	u, err := url.Parse(s)
@@ -82,9 +85,9 @@ func LoadMeta(path string) (Meta, error) {
 	return m, nil
 }
 
-// writeFileAtomic writes b to path via a temp file in the same directory then
+// WriteFileAtomic writes b to path via a temp file in the same directory then
 // renames it into place, so no reader ever observes a partial file.
-func writeFileAtomic(path string, b []byte) error {
+func WriteFileAtomic(path string, b []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
@@ -204,7 +207,7 @@ func FetchToCache(ctx context.Context, client *http.Client, rawURL, cacheDir str
 	if err != nil {
 		return "", fmt.Errorf("encode %s meta: %w", kind, err)
 	}
-	if err := writeFileAtomic(metaPath, b); err != nil {
+	if err := WriteFileAtomic(metaPath, b); err != nil {
 		return "", fmt.Errorf("write %s meta: %w", kind, err)
 	}
 	slog.Info("downloaded "+kind, "url", rawURL, "path", bodyPath, "size", n)

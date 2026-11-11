@@ -294,15 +294,20 @@ var arches = map[string]Arch{
 func Lookup(name string) (Arch, error) {
 	a, ok := arches[name]
 	if !ok {
-		names := make([]string, 0, len(arches))
-		for n := range arches {
-			names = append(names, n)
-		}
-		slices.Sort(names)
 		return Arch{}, fmt.Errorf("unknown architecture %q (available: %s)",
-			name, strings.Join(names, ", "))
+			name, strings.Join(Names(), ", "))
 	}
 	return a, nil
+}
+
+// Names returns the supported architecture names, sorted.
+func Names() []string {
+	names := make([]string, 0, len(arches))
+	for n := range arches {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // BootConfig carries the per-run inputs BootArgs needs beyond the static arch

@@ -9,6 +9,7 @@ func mountfs() error {
 	return nil
 }
 
-func mountOut() {
-	slog.Error("mountOut not implemented")
+func mountShares() error {
+	slog.Error("mountShares not implemented")
+	return nil
 }

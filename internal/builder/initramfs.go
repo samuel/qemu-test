@@ -14,8 +14,8 @@ import (
 	"github.com/samuel/qemu-test/internal/cpio"
 )
 
-// Target is the cross-compilation target for the guest binaries. Init and the
-// test binary share one, since they run in the same VM.
+// Target is the cross-compilation target for the guest init, matching the
+// binary it runs.
 type Target struct {
 	GOOS   string
 	GOARCH string
@@ -46,30 +46,6 @@ func GoBuild(ctx context.Context, out io.Writer, target Target, srcPath string, 
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("go build failed: %w", err)
-	}
-	return nil
-}
-
-func GoBuildTest(ctx context.Context, out io.Writer, target Target, srcPath string, args ...string) error {
-	var pwd string
-	if strings.HasPrefix(srcPath, ".") || strings.HasPrefix(srcPath, "/") {
-		var err error
-		pwd, err = filepath.Abs(srcPath)
-		if err != nil {
-			return err
-		}
-	}
-	args = append([]string{"test", "-o", "/dev/stdout", "-c"}, args...)
-	if pwd == "" {
-		args = append(args, srcPath)
-	}
-	cmd := exec.CommandContext(ctx, "go", args...)
-	cmd.Env = target.env()
-	cmd.Dir = pwd
-	cmd.Stdout = out
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go test -c failed: %w", err)
 	}
 	return nil
 }

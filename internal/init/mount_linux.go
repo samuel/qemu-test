@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -89,13 +90,38 @@ func mountfs() error {
 	return nil
 }
 
-// mountOut mounts the virtio-9p share the host attaches for -out, letting tests
-// hand files back. It must run after loadModules, which registers the 9p driver
-// and its transport. Best-effort: without -out the device is simply absent.
-func mountOut() {
-	if err := os.MkdirAll("/out", 0o755); err != nil {
-		log.Printf("mkdir /out: %v", err)
-	} else if err := syscall.Mount("outshare", "/out", "9p", 0, "trans=virtio,version=9p2000.L"); err != nil {
-		log.Printf("mount /out (9p outshare): %v", err)
+// warn reports a non-fatal setup problem to the host, which logs it as a warning.
+func warn(format string, args ...any) {
+	marker("[TESTS:WARN] "+format+"\n", args...)
+}
+
+// mountShares mounts the virtio-9p shares listed in test-shares.txt, one
+// "tag<TAB>guest path<TAB>ro|rw" per line. It must run after loadModules, which
+// registers the 9p driver and its transport. A share that cannot mount (e.g. a
+// kernel without 9p) leaves an empty directory at its path, so the binary still
+// runs with paths that resolve; the host is warned that the contents are missing.
+func mountShares() error {
+	lines, err := readLines("test-shares.txt")
+	if err != nil {
+		return err
 	}
+	for _, line := range lines {
+		f := strings.Split(line, "\t")
+		if len(f) != 3 {
+			return fmt.Errorf("malformed test-shares.txt line %q", line)
+		}
+		tag, path, mode := f[0], f[1], f[2]
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			warn("share %s: mkdir: %v", path, err)
+			continue
+		}
+		var flags uintptr
+		if mode == "ro" {
+			flags = syscall.MS_RDONLY
+		}
+		if err := syscall.Mount(tag, path, "9p", flags, "trans=virtio,version=9p2000.L"); err != nil {
+			warn("share %s not mounted (%v); using an empty directory", path, err)
+		}
+	}
+	return nil
 }

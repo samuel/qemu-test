@@ -36,11 +36,11 @@ func keys(recs [][2]string) []string {
 	return ks
 }
 
-// A chunk batching several lines and ending in a [TESTS:PASS] marker must
+// A chunk batching several lines and ending in a [TESTS:EXIT] 0 marker must
 // surface every line, not strand the verdict.
 func TestLogParserProcessesAllLinesInOneWrite(t *testing.T) {
-	recs := parseAll(t, "[TESTS:STDOUT] one\n[TESTS:STDOUT] two\n[TESTS:PASS]\n")
-	if got, want := keys(recs), []string{"STDOUT", "STDOUT", "PASS"}; !reflect.DeepEqual(got, want) {
+	recs := parseAll(t, "[TESTS:STDOUT] one\n[TESTS:STDOUT] two\n[TESTS:EXIT] 0\n")
+	if got, want := keys(recs), []string{"STDOUT", "STDOUT", "EXIT"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("keys = %v, want %v (records: %v)", got, want, recs)
 	}
 }
@@ -55,8 +55,8 @@ func TestLogParserStripsControlPrefix(t *testing.T) {
 
 // A marker split across two writes must still be recognized once completed.
 func TestLogParserHandlesSplitWrites(t *testing.T) {
-	recs := parseAll(t, "[TESTS:PA", "SS]\n")
-	if got, want := keys(recs), []string{"PASS"}; !reflect.DeepEqual(got, want) {
+	recs := parseAll(t, "[TESTS:EX", "IT] 0\n")
+	if got, want := keys(recs), []string{"EXIT"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("keys = %v, want %v (records: %v)", got, want, recs)
 	}
 }

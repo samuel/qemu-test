@@ -12,13 +12,14 @@ import (
 // Extra Kind values reported by List, beyond KindKernel/KindBundle.
 const (
 	KindBuilt    = "built"    // a bundle built locally from an arch's BundleConfig
+	KindInit     = "init"     // a compiled guest init
 	KindDownload = "download" // a downloaded body with no extraction dir
 	KindOrphan   = "orphan"   // a sidecar or extraction with no body
 )
 
 // Entry is one logical cached artifact, grouping the files that share a cache
 // key: a downloaded body with its .json sidecar and optional .d extraction dir,
-// or a locally built bundle (.tgz).
+// a locally built bundle (.tgz), or a compiled guest init (.init).
 type Entry struct {
 	Key       string    // sha256 of the source URL, or of a built bundle's config
 	URL       string    // source URL from the sidecar; "" for built bundles and orphans
@@ -33,6 +34,7 @@ type acc struct {
 	hasBody    bool
 	hasExtract bool
 	hasTGZ     bool
+	hasInit    bool
 	size       int64
 	paths      []string
 	metaPath   string
@@ -77,6 +79,9 @@ func List(cacheDir string) ([]Entry, error) {
 			a.size += dirSize(full)
 		case "tgz":
 			a.hasTGZ = true
+			a.size += fileSize(full)
+		case "init":
+			a.hasInit = true
 			a.size += fileSize(full)
 		case "body":
 			a.hasBody = true
@@ -151,6 +156,8 @@ func classify(name string, isDir bool) (key, role string) {
 		return strings.TrimSuffix(name, ".d"), "extract"
 	case strings.HasSuffix(name, BuiltBundleExt):
 		return strings.TrimSuffix(name, BuiltBundleExt), "tgz"
+	case strings.HasSuffix(name, InitExt):
+		return strings.TrimSuffix(name, InitExt), "init"
 	case isHexKey(name):
 		return name, "body"
 	default:
@@ -163,6 +170,8 @@ func kindOf(a *acc) string {
 	switch {
 	case a.hasTGZ:
 		return KindBuilt
+	case a.hasInit:
+		return KindInit
 	case a.hasBody && a.hasExtract:
 		return KindBundle
 	case a.hasBody:

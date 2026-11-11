@@ -2,8 +2,17 @@
 
 package main
 
-import "os/exec"
+import (
+	"errors"
+	"os/exec"
+)
 
 // runReaped has no reaping to do off Linux; the stub only keeps init building on
 // the dev host.
-func runReaped(cmd *exec.Cmd) error { return cmd.Run() }
+func runReaped(cmd *exec.Cmd) (int, error) {
+	err := cmd.Run()
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok && ee.Exited() {
+		return ee.ExitCode(), nil
+	}
+	return 0, err
+}
