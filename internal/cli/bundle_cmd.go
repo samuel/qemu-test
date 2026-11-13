@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/samuel/qemu-test/internal/bundler"
+	"samuelks.com/qemu-test/internal/bundler"
 )
 
 // bundleCommand implements "qemu-test bundle": it assembles a boot bundle (.tgz)

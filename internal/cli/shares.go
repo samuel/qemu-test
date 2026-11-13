@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samuel/qemu-test/internal/runner"
+	"samuelks.com/qemu-test/internal/runner"
 )
 
 // -cwd values.

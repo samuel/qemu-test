@@ -12,8 +12,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/samuel/qemu-test/internal/arch"
-	"github.com/samuel/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/cache"
 )
 
 // makeTarGz builds a gzip-compressed tar from name->content, in sorted name order.

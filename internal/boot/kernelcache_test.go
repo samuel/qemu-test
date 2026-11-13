@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/samuel/qemu-test/internal/arch"
-	"github.com/samuel/qemu-test/internal/bundler"
-	"github.com/samuel/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/bundler"
+	"samuelks.com/qemu-test/internal/cache"
 )
 
 // fakeKernelServer serves a kernel body with an optional ETag, honors

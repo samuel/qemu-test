@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samuel/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/cache"
 )
 
 // bundleServer serves the named blobs over HTTP for the end-to-end tests.

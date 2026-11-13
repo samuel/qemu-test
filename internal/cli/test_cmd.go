@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/samuel/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/arch"
 )
 
 // testCommand implements "qemu-test test": a thin wrapper that runs

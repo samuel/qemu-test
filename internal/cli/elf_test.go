@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samuel/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/arch"
 )
 
 func TestElfGOARCH(t *testing.T) {

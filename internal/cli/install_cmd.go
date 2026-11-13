@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/samuel/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/arch"
 )
 
 // installExecCommand implements "qemu-test install-exec": it symlinks

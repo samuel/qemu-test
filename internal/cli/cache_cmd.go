@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/samuel/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/cache"
 )
 
 // cacheCommand implements "qemu-test cache": inspecting and pruning the on-disk

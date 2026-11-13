@@ -1,4 +1,4 @@
-module github.com/samuel/qemu-test
+module samuelks.com/qemu-test
 
 go 1.26.4
 

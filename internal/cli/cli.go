@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samuel/qemu-test/internal/arch"
-	"github.com/samuel/qemu-test/internal/runner"
+	"samuelks.com/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/runner"
 )
 
 // flagsEnv names the environment variable holding extra VM flags, prepended to

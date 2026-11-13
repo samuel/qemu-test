@@ -13,8 +13,8 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/samuel/qemu-test/internal/cpio"
 	"github.com/ulikunitz/xz"
+	"samuelks.com/qemu-test/internal/cpio"
 )
 
 // regRec builds a regular-file cpio record.

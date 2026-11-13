@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/samuel/qemu-test/internal/bundler"
+	"samuelks.com/qemu-test/internal/bundler"
 )
 
 // Arch is the per-architecture configuration needed to boot a guest.

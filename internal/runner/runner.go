@@ -27,12 +27,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/samuel/qemu-test/internal/arch"
-	"github.com/samuel/qemu-test/internal/boot"
-	"github.com/samuel/qemu-test/internal/builder"
-	"github.com/samuel/qemu-test/internal/cache"
-	"github.com/samuel/qemu-test/internal/modules"
-	"github.com/samuel/qemu-test/internal/qmp"
+	"samuelks.com/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/boot"
+	"samuelks.com/qemu-test/internal/builder"
+	"samuelks.com/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/modules"
+	"samuelks.com/qemu-test/internal/qmp"
 )
 
 // Options carries the inputs for a single VM run, assembled from the flags.

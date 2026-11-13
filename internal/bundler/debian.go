@@ -12,7 +12,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samuel/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/cache"
 )
 
 // resolveDebianURL resolves a DebianRef to a concrete .deb URL: it follows the

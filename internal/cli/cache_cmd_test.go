@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samuel/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/cache"
 )
 
 // runCache invokes cacheCommand with output captured, returning the exit code

@@ -9,7 +9,7 @@ package main
 import (
 	"os"
 
-	"github.com/samuel/qemu-test/internal/cli"
+	"samuelks.com/qemu-test/internal/cli"
 )
 
 func main() {

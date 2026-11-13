@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samuel/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/cache"
 )
 
 // entry is a resolved output file held in memory until the Bundle is written.

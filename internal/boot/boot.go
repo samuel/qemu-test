@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samuel/qemu-test/internal/arch"
-	"github.com/samuel/qemu-test/internal/bundler"
-	"github.com/samuel/qemu-test/internal/cache"
-	"github.com/samuel/qemu-test/internal/modules"
+	"samuelks.com/qemu-test/internal/arch"
+	"samuelks.com/qemu-test/internal/bundler"
+	"samuelks.com/qemu-test/internal/cache"
+	"samuelks.com/qemu-test/internal/modules"
 )
 
 // Env is the resolved set of host artifacts needed to boot a guest.
