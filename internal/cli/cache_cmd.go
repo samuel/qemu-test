@@ -11,8 +11,11 @@ import (
 	"samuelks.com/qemu-test/internal/cache"
 )
 
+// shortKeyLen is the length of the key prefix "cache list" prints.
+const shortKeyLen = 12
+
 // cacheCommand implements "qemu-test cache": inspecting and pruning the on-disk
-// download cache. Returns a process exit code (0 success, 1 IO, 2 usage).
+// cache of downloads, built bundles, and compiled guest inits. Returns a process exit code (0 success, 1 IO, 2 usage).
 func cacheCommand(args []string) int {
 	fs := flag.NewFlagSet("qemu-test cache", flag.ContinueOnError)
 	verbose := fs.Bool("v", false, "In list, also print each item's on-disk paths")
@@ -65,13 +68,24 @@ func cacheCommand(args []string) int {
 	}
 }
 
-// cacheClear removes cached items (all, or only those named by key or URL) and
-// reports what was freed.
+// cacheClear removes cached items (all, or only those named by targets) and
+// reports what was freed. Nothing is removed unless every target resolves.
 func cacheClear(dir string, targets []string) int {
 	var keys []string
-	for _, t := range targets {
-		// Accept either a cache key or the source URL it was derived from.
-		keys = append(keys, t, cache.CacheKey(t))
+	if len(targets) > 0 {
+		entries, err := cache.List(dir)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Failed: %s\n", err)
+			return 1
+		}
+		for _, t := range targets {
+			key, err := resolveCacheKey(entries, t)
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "qemu-test cache: %s\n", err)
+				return 1
+			}
+			keys = append(keys, key)
+		}
 	}
 	removed, freed, err := cache.Clear(dir, keys...)
 	if err != nil {
@@ -79,15 +93,35 @@ func cacheClear(dir string, targets []string) int {
 		return 1
 	}
 	if len(removed) == 0 {
-		if len(targets) > 0 {
-			_, _ = fmt.Fprintf(os.Stderr, "no matching cache item for %s\n", strings.Join(targets, ", "))
-			return 1
-		}
 		fmt.Println("cache already empty")
 		return 0
 	}
 	fmt.Printf("removed %d item(s), freed %s\n", len(removed), humanBytes(freed))
 	return 0
+}
+
+// resolveCacheKey maps a clear target to the key of the entry it names: the
+// source URL the key was derived from, a full key, or a unique key prefix such
+// as the short key "cache list" prints.
+func resolveCacheKey(entries []cache.Entry, target string) (string, error) {
+	urlKey := cache.CacheKey(target)
+	var matches []string
+	for _, e := range entries {
+		if e.Key == target || e.Key == urlKey {
+			return e.Key, nil
+		}
+		if strings.HasPrefix(e.Key, target) {
+			matches = append(matches, e.Key)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no cache item matches %q", target)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("key prefix %q is ambiguous: it matches %d items", target, len(matches))
+	}
 }
 
 // printCacheList writes the cache entries as an aligned table, or as a per-item
@@ -109,7 +143,7 @@ func printCacheList(entries []cache.Entry, verbose bool) error {
 		if source == "" {
 			source = "-"
 		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Key[:12], e.Kind, humanBytes(e.Size), fetchedAt(e), source); err != nil {
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", e.Key[:shortKeyLen], e.Kind, humanBytes(e.Size), fetchedAt(e), source); err != nil {
 			return err
 		}
 	}
@@ -155,12 +189,15 @@ func printCacheSummary(dir string, entries []cache.Entry) {
 func cacheUsage(fs *flag.FlagSet) func() {
 	return func() {
 		out := fs.Output()
-		_, _ = fmt.Fprint(out, `qemu-test cache manages the on-disk kernel/bundle download cache.
+		_, _ = fmt.Fprint(out, `qemu-test cache manages the on-disk cache: downloaded kernels and bundles,
+locally built bundles, and compiled guest inits. Everything in it is re-fetched
+or rebuilt on demand, so clearing is safe.
 
 Usage:
   qemu-test cache [info]                Show item count and total size (default)
   qemu-test cache list [-v]             List cached items (-v also shows paths)
   qemu-test cache clear [key|url ...]   Remove all cached items, or only those named
+                                        (by key, unique key prefix, or source URL)
   qemu-test cache dir                   Print the cache directory path
 
 Flags:

@@ -184,7 +184,7 @@ var arches = map[string]Arch{
 	// s390x (IBM Z) is big-endian. Its default virtio devices sit on the CCW bus,
 	// but the s390-ccw-virtio machine also supports PCI via zPCI: qemu auto-wraps a
 	// PCI device added with -qemu.device in a zPCI function, so USB (qemu-xhci) and
-	// -out (virtio-9p-pci) both work. Do not add an explicit zpci device; it
+	// shares (virtio-9p-pci) both work. Do not add an explicit zpci device; it
 	// collides with the auto-created one.
 	"s390x": {
 		Name:       "s390x",

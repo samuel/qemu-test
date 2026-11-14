@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Extra Kind values reported by List, beyond KindKernel/KindBundle.
+// Entry kinds reported by List, alongside KindBundle.
 const (
 	KindBuilt    = "built"    // a bundle built locally from an arch's BundleConfig
 	KindInit     = "init"     // a compiled guest init
@@ -21,9 +21,9 @@ const (
 // key: a downloaded body with its .json sidecar and optional .d extraction dir,
 // a locally built bundle (.tgz), or a compiled guest init (.init).
 type Entry struct {
-	Key       string    // sha256 of the source URL, or of a built bundle's config
-	URL       string    // source URL from the sidecar; "" for built bundles and orphans
-	Kind      string    // KindBundle | KindBuilt | KindDownload | KindOrphan
+	Key       string    // sha256 of the source URL, a built bundle's config, or an init's arch + source
+	URL       string    // source URL from the sidecar; "" for built bundles, inits, and orphans
+	Kind      string    // KindBundle | KindBuilt | KindInit | KindDownload | KindOrphan
 	FetchedAt time.Time // from the sidecar; zero when unknown
 	Size      int64     // total on-disk bytes
 	Paths     []string  // every path the entry owns, so it can be removed wholesale
@@ -41,7 +41,7 @@ type acc struct {
 }
 
 // List enumerates the cached artifacts under cacheDir, grouping bodies, sidecars,
-// extraction dirs, and built bundles by their shared cache key. Transient temp
+// extraction dirs, built bundles, and inits by their shared cache key. Transient temp
 // files are ignored, a missing cacheDir yields no entries, and the result is
 // sorted newest-fetched first.
 func List(cacheDir string) ([]Entry, error) {

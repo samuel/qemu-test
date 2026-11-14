@@ -53,14 +53,16 @@ func bundleCommand(args []string) int {
 func bundleUsage(fs *flag.FlagSet) func() {
 	return func() {
 		out := fs.Output()
-		_, _ = fmt.Fprint(out, `qemu-test bundle assembles a boot bundle (.tgz) from remote files and archives.
+		_, _ = fmt.Fprint(out, `qemu-test bundle assembles a boot bundle (.tgz) from files and archives.
 
 Usage:
   qemu-test bundle -config <config.json> -o <bundle.tgz> [flags]
 
 The config is a JSON object with one key "sources" whose value is an array of
-sources. A plain source downloads one file to its "dst"; an archive source
-selects files via "files" (glob -> dst). Globs use doublestar semantics: "*"
+sources. A source is located by a "url" or by a "debian" block, which resolves
+the current version of a package from a Debian Packages index. A plain source
+downloads one file to its "dst"; an archive source (cpio, tar, or .deb, under
+gzip/xz/zstd) selects files via "files" (glob -> dst). Globs use doublestar semantics: "*"
 matches within a path segment, "**" any depth. A dst ending in "/" is a
 directory: the matched path with the glob's fixed (non-wildcard) prefix removed
 is appended under it. A "." segment in the glob is a keep-anchor (rsync -R):

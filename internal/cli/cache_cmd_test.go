@@ -101,6 +101,50 @@ func TestCacheListAndClear(t *testing.T) {
 	}
 }
 
+func TestCacheClearByKeyPrefix(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("QEMU_TEST_CACHE", dir)
+	// Built bundles have no source URL, so the key is the only way to name one.
+	keyA := "aaaa" + strings.Repeat("0", 60)
+	keyB := "aabb" + strings.Repeat("0", 60)
+	keyC := "cccc" + strings.Repeat("0", 60)
+	for _, k := range []string{keyA, keyB, keyC} {
+		if err := os.WriteFile(filepath.Join(dir, k+cache.BuiltBundleExt), make([]byte, 16), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exists := func(k string) bool {
+		_, err := os.Stat(filepath.Join(dir, k+cache.BuiltBundleExt))
+		return err == nil
+	}
+
+	// An ambiguous or unknown target removes nothing, even beside a valid one.
+	for _, target := range []string{"aa", "ffff"} {
+		if code, out := runCache(t, "clear", keyC[:shortKeyLen], target); code != 1 {
+			t.Errorf("clear %q code = %d, want 1; out = %s", target, code, out)
+		}
+		if !exists(keyA) || !exists(keyB) || !exists(keyC) {
+			t.Fatalf("clear %q removed an item", target)
+		}
+	}
+
+	// The short key printed by "list" names its item.
+	if code, out := runCache(t, "clear", keyA[:shortKeyLen]); code != 0 || !strings.Contains(out, "removed 1 item") {
+		t.Fatalf("clear by short key = %d %q", code, out)
+	}
+	if exists(keyA) || !exists(keyB) || !exists(keyC) {
+		t.Error("clear by short key removed the wrong items")
+	}
+
+	// A full key still works.
+	if code, out := runCache(t, "clear", keyB); code != 0 {
+		t.Fatalf("clear by full key = %d %q", code, out)
+	}
+	if exists(keyB) || !exists(keyC) {
+		t.Error("clear by full key removed the wrong items")
+	}
+}
+
 func TestHumanBytes(t *testing.T) {
 	cases := []struct {
 		in   int64

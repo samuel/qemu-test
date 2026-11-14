@@ -37,9 +37,9 @@ func IsHTTPURL(s string) bool {
 	return u.Scheme == "http" || u.Scheme == "https"
 }
 
-// CacheDir returns the directory where downloaded kernels and bundles are
-// cached, creating it if needed. QEMU_TEST_CACHE overrides the default
-// os.UserCacheDir()/qemu-test. Only consulted when something needs fetching.
+// CacheDir returns the directory holding downloads, built bundles, and compiled
+// guest inits, creating it if needed. QEMU_TEST_CACHE overrides the default
+// os.UserCacheDir()/qemu-test.
 func CacheDir() (string, error) {
 	dir := os.Getenv("QEMU_TEST_CACHE")
 	if dir == "" {
@@ -50,7 +50,7 @@ func CacheDir() (string, error) {
 		dir = filepath.Join(base, "qemu-test")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create kernel cache dir %q: %w", dir, err)
+		return "", fmt.Errorf("create cache dir %q: %w", dir, err)
 	}
 	return dir, nil
 }

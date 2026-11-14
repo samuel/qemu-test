@@ -242,7 +242,7 @@ func Run(ctx context.Context, o Options) (int, error) {
 	// printing "[QMP]<json>", which tests only do well after boot.
 	var qmpConn atomic.Pointer[qmp.Conn]
 	// The last console lines, so a run that never reports a verdict (kernel panic,
-	// init crash, bad qemu args) can show what the guest last printed.
+	// init crash, bad qemu args, timeout) can show what the guest last printed.
 	const tailMax = 25
 	var tail []string
 	recordTail := func(line []byte) {

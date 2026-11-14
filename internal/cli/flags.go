@@ -39,7 +39,7 @@ the QEMU_TEST_FLAGS environment variable.
 Commands:
   test           Run go test with test binaries executed in a VM (sets GOOS/GOARCH)
   install-exec   Symlink go_linux_<arch>_exec so cross-compiled go test runs in a VM
-  cache          Manage the kernel/bundle download cache (info, list, clear, dir)
+  cache          Manage the download and build cache (info, list, clear, dir)
   bundle         Build a boot bundle (.tgz) from a JSON config
   Run "qemu-test <command> -h" for command-specific help.
 

@@ -1,4 +1,6 @@
-// Command qemu-test runs a Go package's tests inside a freshly-booted QEMU VM.
+// Command qemu-test runs a static Linux executable, in practice a Go test
+// binary, inside a freshly-booted QEMU VM. It is built to be the -exec program
+// of go test.
 //
 // The work lives in internal/cli, internal/runner, internal/boot, and
 // internal/arch. This package is a thin shim; it also declares the embedded init
